@@ -1,0 +1,9 @@
+streamlit
+google-search-results
+pandas
+gspread
+tabulate
+google-auth
+google-auth-oauthlib
+serpapi
+
