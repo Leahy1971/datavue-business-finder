@@ -6,4 +6,4 @@ tabulate
 google-auth
 google-auth-oauthlib
 serpapi
-
+beautifulsoup4
