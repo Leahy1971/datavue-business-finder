@@ -7,6 +7,8 @@ from datetime import datetime
 import gspread
 from google.oauth2 import service_account
 
+st.write("✅ Loaded secrets:", list(st.secrets.keys()))
+
 # Google Sheets setup
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = service_account.Credentials.from_service_account_info(
