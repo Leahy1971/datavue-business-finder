@@ -14,6 +14,11 @@ SHEET_NAME = "CRM"
 def get_google_sheets_client():
     """Initialize Google Sheets client using Streamlit secrets"""
     try:
+        # Check if secrets are available
+        if "google_service_account" not in st.secrets:
+            st.error("Google service account credentials not found in secrets")
+            return None
+            
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds_dict = {
             "type": st.secrets["google_service_account"]["type"],
@@ -29,9 +34,11 @@ def get_google_sheets_client():
         }
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
-        return client.open_by_url(SHEET_URL).worksheet(SHEET_NAME)
+        sheet = client.open_by_url(SHEET_URL).worksheet(SHEET_NAME)
+        st.success("✅ Connected to Google Sheets")
+        return sheet
     except Exception as e:
-        st.error(f"Error connecting to Google Sheets: {e}")
+        st.error(f"Error connecting to Google Sheets: {str(e)}")
         return None
 
 def fetch_leads(postcode, query_term):
@@ -115,41 +122,53 @@ def push_to_crm(sheet, business_data):
     """Push business data to CRM sheet"""
     try:
         if not sheet:
-            st.error("Google Sheets connection not available")
+            st.error("❌ Google Sheets connection not available")
             return False
-            
-        # Check if business already exists
-        crm_data = sheet.get_all_records()
-        exists = any(
-            r.get("Business Name") == business_data["Business Name"] or 
-            r.get("Link") == business_data["Link"]
-            for r in crm_data
-        )
         
-        if exists:
-            st.warning("⚠️ Already exists in CRM.")
-            return False
-        else:
+        with st.spinner("Checking if business exists in CRM..."):
+            # Check if business already exists
+            try:
+                crm_data = sheet.get_all_records()
+                st.info(f"Found {len(crm_data)} existing records in CRM")
+            except Exception as e:
+                st.error(f"Error reading CRM data: {str(e)}")
+                return False
+            
+            exists = any(
+                str(r.get("Business Name", "")).strip().lower() == str(business_data["Business Name"]).strip().lower() or 
+                str(r.get("Link", "")).strip() == str(business_data["Link"]).strip()
+                for r in crm_data
+            )
+            
+            if exists:
+                st.warning("⚠️ Business already exists in CRM.")
+                return False
+            
+        with st.spinner("Adding business to CRM..."):
+            # Prepare data for insertion
+            row_data = [
+                str(business_data["Business Name"]),
+                str(business_data["Review Score"]),
+                str(business_data["Total Reviews"]),
+                str(business_data["Location"]),
+                str(business_data["Address"]),
+                str(business_data["Link"]),
+                str(business_data["Phone"]),
+                str(business_data["Website"]),
+                str(business_data["Reviews"]),
+                str(business_data["Email"]),
+                str(business_data["Scraped On"]),
+                str(business_data["Notes"])
+            ]
+            
             # Append new row
-            sheet.append_row([
-                business_data["Business Name"], 
-                business_data["Review Score"], 
-                business_data["Total Reviews"], 
-                business_data["Location"],
-                business_data["Address"], 
-                business_data["Link"], 
-                business_data["Phone"], 
-                business_data["Website"], 
-                business_data["Reviews"],
-                business_data["Email"], 
-                business_data["Scraped On"], 
-                business_data["Notes"]
-            ])
-            st.success("✅ Pushed to CRM!")
+            sheet.append_row(row_data)
+            st.success("✅ Successfully pushed to CRM!")
             return True
     
     except Exception as e:
-        st.error(f"Error pushing to CRM: {e}")
+        st.error(f"❌ Error pushing to CRM: {str(e)}")
+        st.error("Please check your Google Sheets permissions and connection")
         return False
 
 # ====== STREAMLIT UI ======
@@ -157,7 +176,14 @@ st.title("🔍 Datavue Business Finder with CRM Sync")
 st.caption("Search top-rated local businesses and sync straight into your CRM Sheet")
 
 # Initialize Google Sheets connection
-sheet = get_google_sheets_client()
+with st.spinner("Connecting to Google Sheets..."):
+    sheet = get_google_sheets_client()
+
+if sheet:
+    st.success("🔗 Google Sheets connected successfully!")
+else:
+    st.error("❌ Google Sheets connection failed. CRM features will be disabled.")
+    st.info("💡 Make sure your Google service account credentials are properly configured in Streamlit secrets.")
 
 # Input fields
 col1, col2 = st.columns(2)
@@ -197,8 +223,10 @@ if st.button("Search"):
                     st.write(f"✉️ **Email:** {row['Email']}")
                 
                 # Push to CRM button
-                if st.button(f"Push to CRM", key=f"push_{i}"):
+                if sheet and st.button(f"Push to CRM", key=f"push_{i}"):
                     push_to_crm(sheet, row)
+                elif not sheet:
+                    st.error("❌ CRM unavailable - Google Sheets not connected")
             
             # Download CSV
             csv_data = df.to_csv(index=False)
