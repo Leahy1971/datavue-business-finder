@@ -278,25 +278,106 @@ if st.session_state.search_performed and st.session_state.businesses:
     st.write("---")
     st.subheader("Search Results")
     
-    # Display results
-    for i, row in df.iterrows():
-        with st.container():
-            st.markdown("---")
-            st.markdown(f"### 🔗 [{row['Business Name']}]({row['Link']})")
-            st.write(f"📍 **Address:** {row['Address']}")
-            st.write(f"⭐ **Rating:** {row['Review Score']} from {row['Total Reviews']} reviews")
-            st.write(f"📞 **Phone:** {row['Phone']}")
-            if row['Website']:
-                st.write(f"🌐 **Website:** [{row['Website']}]({row['Website']})")
-            if row['Email']:
-                st.write(f"✉️ **Email:** {row['Email']}")
-            
-            # Push to CRM button
-            if sheet and st.button(f"Push to CRM", key=f"push_{i}"):
-                success = push_to_crm(sheet, row)
+    # Create a display dataframe for the table
+    display_df = df.copy()
+    
+    # Create clickable links for business names
+    display_df['Business Name'] = display_df.apply(
+        lambda row: f"[{row['Business Name']}]({row['Link']})", axis=1
+    )
+    
+    # Format website links
+    display_df['Website'] = display_df['Website'].apply(
+        lambda x: f"[Link]({x})" if x and x.strip() else ""
+    )
+    
+    # Select and reorder columns for display
+    display_columns = [
+        'Business Name', 'Review Score', 'Total Reviews', 'Address', 
+        'Phone', 'Website', 'Email'
+    ]
+    
+    # Display the table
+    st.dataframe(
+        display_df[display_columns],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Business Name": st.column_config.LinkColumn(
+                "Business Name",
+                help="Click to view on Google Maps",
+                width="medium"
+            ),
+            "Review Score": st.column_config.NumberColumn(
+                "Rating",
+                help="Google rating out of 5",
+                width="small",
+                format="%.1f"
+            ),
+            "Total Reviews": st.column_config.NumberColumn(
+                "Reviews",
+                help="Number of reviews",
+                width="small"
+            ),
+            "Address": st.column_config.TextColumn(
+                "Address",
+                width="large"
+            ),
+            "Phone": st.column_config.TextColumn(
+                "Phone",
+                width="medium"
+            ),
+            "Website": st.column_config.LinkColumn(
+                "Website",
+                help="Business website",
+                width="small"
+            ),
+            "Email": st.column_config.TextColumn(
+                "Email",
+                width="medium"
+            )
+        }
+    )
+    
+    st.write("---")
+    st.subheader("CRM Actions")
+    
+    # Add CRM push buttons below the table
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🔄 Push All to CRM"):
+            if sheet:
+                success_count = 0
+                for _, row in df.iterrows():
+                    if push_to_crm(sheet, row):
+                        success_count += 1
+                
+                if success_count > 0:
+                    st.success(f"✅ Successfully pushed {success_count} businesses to CRM!")
+                else:
+                    st.warning("⚠️ No new businesses were added (all may already exist)")
+            else:
+                st.error("❌ CRM unavailable - Google Sheets not connected")
+    
+    with col2:
+        # Individual business selector for CRM push
+        business_names = df['Business Name'].tolist()
+        selected_business = st.selectbox(
+            "Select business to push to CRM:",
+            options=range(len(business_names)),
+            format_func=lambda x: business_names[x] if x < len(business_names) else "",
+            key="business_selector"
+        )
+    
+    with col3:
+        if st.button("📤 Push Selected to CRM"):
+            if sheet and selected_business is not None:
+                selected_row = df.iloc[selected_business]
+                success = push_to_crm(sheet, selected_row)
                 if success:
-                    st.rerun()  # Refresh to show updated status
-            elif not sheet:
+                    st.rerun()
+            else:
                 st.error("❌ CRM unavailable - Google Sheets not connected")
     
     # Download CSV
