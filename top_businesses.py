@@ -43,11 +43,7 @@ def fetch_leads(postcode, keyword):
     leads = []
     for place in results.get("local_results", []):
         name = place.get("title", "")
-        gps_data = place.get("gps_coordinates")
-        if isinstance(gps_data, dict):
-            maps_review_url = gps_data.get("link")
-        else:
-            maps_review_url = f"https://www.google.com/maps/search/?api=1&query={quote_plus(name + ' ' + postcode)}"
+        maps_review_url = f"https://www.google.com/maps/search/?api=1&query={quote_plus(name + ' ' + postcode)}"
 
         leads.append({
             "Business Name": f"[📍 {name}]({maps_review_url})",
