@@ -147,17 +147,43 @@ def fetch_leads(postcode, query_term):
             address = place.get("address", "")
             phone = place.get("phone", "")
             website = place.get("website", "")
-            email = place.get("email", "")
             
-            # Extract number of reviews from the reviews string
+            # Extract email from multiple possible sources
+            email = ""
+            if place.get("email"):
+                email = place.get("email")
+            elif place.get("contact_info", {}).get("email"):
+                email = place.get("contact_info", {}).get("email")
+            
+            # Extract number of reviews - try multiple approaches
             total_reviews = ""
-            if isinstance(reviews, str) and "reviews" in reviews:
-                total_reviews = ''.join([c for c in reviews if c.isdigit()])
+            if reviews:
+                if isinstance(reviews, str):
+                    # Extract numbers from reviews string like "123 reviews"
+                    import re
+                    numbers = re.findall(r'\d+', reviews)
+                    if numbers:
+                        total_reviews = numbers[0]
+                elif isinstance(reviews, (int, float)):
+                    total_reviews = str(reviews)
+            
+            # Alternative: check if there's a separate reviews_count field
+            if not total_reviews and place.get("reviews_count"):
+                total_reviews = str(place.get("reviews_count"))
+            
+            # Another alternative: check user_ratings_total
+            if not total_reviews and place.get("user_ratings_total"):
+                total_reviews = str(place.get("user_ratings_total"))
+            
+            # Debug: Print the place data structure for first few results
+            if len(businesses) < 3:
+                st.write(f"Debug - Place data for {name}:")
+                st.json(place)
             
             businesses.append({
                 "Business Name": name,
                 "Review Score": score,
-                "Total Reviews": total_reviews,
+                "Total Reviews": total_reviews if total_reviews else "0",
                 "Location": postcode,
                 "Address": address,
                 "Link": google_maps_url,
