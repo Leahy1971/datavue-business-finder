@@ -1,13 +1,12 @@
-# ✅ Streamlit Business Finder – FINAL VERSION with Google Maps links + stable CRM sync
+# ✅ Streamlit Business Finder – FINAL VERSION with Google Maps links + stable CRM sync using SerpAPI
 
 import streamlit as st
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
 from datetime import datetime
 import gspread
 from google.oauth2 import service_account
+from serpapi import GoogleSearch
 
 st.set_page_config(page_title="Local Business Finder", layout="wide")
 st.title("🔎 Datavue Business Finder")
@@ -30,8 +29,7 @@ keywords = st.text_input("Search keywords (comma-separated)", "plumber, electric
 radius = st.slider("Search radius (miles)", 1, 20, 5)
 search_button = st.button("Search")
 
-# Search Logic using Google Maps URLs
-from serpapi import GoogleSearch
+# Search Logic using SerpAPI
 
 def fetch_leads(postcode, keyword):
     search = GoogleSearch({
