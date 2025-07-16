@@ -5,6 +5,7 @@ from serpapi import GoogleSearch
 from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
+import time
 
 # ====== CONFIGURATION ======
 API_KEY = "6ba2e2001a696a5702e9a3ce0d491454f20226ff2bf0d48bb838e0562e57f847"
@@ -19,44 +20,82 @@ if 'search_performed' not in st.session_state:
 
 def get_google_sheets_client():
     """Initialize Google Sheets client using Streamlit secrets"""
+    # Check if secrets are available
+    if "google_service_account" not in st.secrets:
+        st.error("❌ Google service account credentials not found in secrets")
+        st.info("Please add your Google service account JSON to Streamlit secrets")
+        return None
+    
+    st.write("✅ Found Google service account credentials")
+    
+    # Check required fields
+    required_fields = ["type", "project_id", "private_key", "client_email"]
+    missing_fields = []
+    
+    for field in required_fields:
+        if field not in st.secrets["google_service_account"]:
+            missing_fields.append(field)
+    
+    if missing_fields:
+        st.error(f"❌ Missing required fields in Google service account: {missing_fields}")
+        return None
+        
+    st.write("✅ All required credential fields present")
+    
+    # Create credentials
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds_dict = {
+        "type": st.secrets["google_service_account"]["type"],
+        "project_id": st.secrets["google_service_account"]["project_id"],
+        "private_key_id": st.secrets["google_service_account"]["private_key_id"],
+        "private_key": st.secrets["google_service_account"]["private_key"],
+        "client_email": st.secrets["google_service_account"]["client_email"],
+        "client_id": st.secrets["google_service_account"]["client_id"],
+        "auth_uri": st.secrets["google_service_account"]["auth_uri"],
+        "token_uri": st.secrets["google_service_account"]["token_uri"],
+        "auth_provider_x509_cert_url": st.secrets["google_service_account"]["auth_provider_x509_cert_url"],
+        "client_x509_cert_url": st.secrets["google_service_account"]["client_x509_cert_url"]
+    }
+    
     try:
-        # Check if secrets are available
-        if "google_service_account" not in st.secrets:
-            st.error("Google service account credentials not found in secrets")
-            return None
-            
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds_dict = {
-            "type": st.secrets["google_service_account"]["type"],
-            "project_id": st.secrets["google_service_account"]["project_id"],
-            "private_key_id": st.secrets["google_service_account"]["private_key_id"],
-            "private_key": st.secrets["google_service_account"]["private_key"],
-            "client_email": st.secrets["google_service_account"]["client_email"],
-            "client_id": st.secrets["google_service_account"]["client_id"],
-            "auth_uri": st.secrets["google_service_account"]["auth_uri"],
-            "token_uri": st.secrets["google_service_account"]["token_uri"],
-            "auth_provider_x509_cert_url": st.secrets["google_service_account"]["auth_provider_x509_cert_url"],
-            "client_x509_cert_url": st.secrets["google_service_account"]["client_x509_cert_url"]
-        }
+        st.write("🔑 Creating credentials...")
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+        
+        st.write("🔗 Authorizing with Google...")
+        google_client = gspread.authorize(creds)
+        
+        st.write("📊 Opening spreadsheet...")
+        spreadsheet = google_client.open_by_url(SHEET_URL)
+        
+        st.write("📋 Accessing worksheet...")
+        sheet = spreadsheet.worksheet(SHEET_NAME)
+        
+        st.success("✅ Successfully connected to Google Sheets!")
+        return sheet
+        
+    except gspread.WorksheetNotFound:
+        st.error(f"❌ Worksheet '{SHEET_NAME}' not found.")
         try:
-            sheet = client.open_by_url(SHEET_URL).worksheet(SHEET_NAME)
-            st.success("✅ Connected to Google Sheets")
-            return sheet
-        except gspread.WorksheetNotFound:
-            st.error(f"❌ Worksheet '{SHEET_NAME}' not found. Available worksheets:")
-            try:
-                spreadsheet = client.open_by_url(SHEET_URL)
-                worksheets = [ws.title for ws in spreadsheet.worksheets()]
-                st.write(worksheets)
-                return None
-            except Exception as e2:
-                st.error(f"❌ Could not access spreadsheet: {str(e2)}")
-                return None
-        except Exception as e:
-            st.error(f"❌ Error accessing Google Sheets: {str(e)}")
-            return None
+            worksheets = [ws.title for ws in spreadsheet.worksheets()]
+            st.write(f"Available worksheets: {worksheets}")
+        except:
+            st.error("Could not list available worksheets")
+        return None
+        
     except Exception as e:
-        st.error(f"Error connecting to Google Sheets: {str(e)}")
+        st.error(f"❌ Error: {str(e)}")
+        st.error(f"❌ Error type: {type(e).__name__}")
+        
+        # More specific error handling
+        if "private_key" in str(e):
+            st.error("🔑 Issue with private key - check if it's properly formatted")
+        elif "client_email" in str(e):
+            st.error("📧 Issue with client email - check service account email")
+        elif "permission" in str(e).lower():
+            st.error("🔐 Permission issue - make sure service account has access to the sheet")
+        elif "not found" in str(e).lower():
+            st.error("📄 Spreadsheet not found - check the URL")
+            
         return None
 
 def fetch_leads(postcode, query_term):
@@ -138,23 +177,19 @@ def fetch_leads(postcode, query_term):
 
 def push_to_crm(sheet, business_data):
     """Push business data to CRM sheet"""
+    if not sheet:
+        st.error("❌ Google Sheets connection not available")
+        return False
+    
     try:
-        if not sheet:
-            st.error("❌ Google Sheets connection not available")
-            return False
-        
         with st.spinner("Checking if business exists in CRM..."):
             # Check if business already exists
-            try:
-                crm_data = sheet.get_all_records()
-                st.info(f"Found {len(crm_data)} existing records in CRM")
-            except Exception as e:
-                st.error(f"Error reading CRM data: {str(e)}")
-                return False
+            crm_data = sheet.get_all_records()
+            st.info(f"Found {len(crm_data)} existing records in CRM")
             
             # Check for duplicates
-            business_name = str(business_data["Business Name"]).strip().lower()
-            business_link = str(business_data["Link"]).strip()
+            business_name = str(business_data.get("Business Name", "")).strip().lower()
+            business_link = str(business_data.get("Link", "")).strip()
             
             exists = any(
                 str(r.get("Business Name", "")).strip().lower() == business_name or 
@@ -188,7 +223,6 @@ def push_to_crm(sheet, business_data):
             st.success("✅ Successfully pushed to CRM!")
             
             # Add a small delay to ensure the data is written
-            import time
             time.sleep(1)
             
             return True
