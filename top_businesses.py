@@ -281,31 +281,20 @@ if st.session_state.search_performed and st.session_state.businesses:
     # Create a display dataframe for the table
     display_df = df.copy()
     
-    # Create clickable links for business names
-    display_df['Business Name'] = display_df.apply(
-        lambda row: f"[{row['Business Name']}]({row['Link']})", axis=1
-    )
-    
-    # Format website links
-    display_df['Website'] = display_df['Website'].apply(
-        lambda x: f"[Link]({x})" if x and x.strip() else ""
-    )
-    
     # Select and reorder columns for display
     display_columns = [
         'Business Name', 'Review Score', 'Total Reviews', 'Address', 
-        'Phone', 'Website', 'Email'
+        'Phone', 'Website', 'Email', 'Link'
     ]
     
-    # Display the table
+    # Display the table with proper link configuration
     st.dataframe(
         display_df[display_columns],
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Business Name": st.column_config.LinkColumn(
+            "Business Name": st.column_config.TextColumn(
                 "Business Name",
-                help="Click to view on Google Maps",
                 width="medium"
             ),
             "Review Score": st.column_config.NumberColumn(
@@ -330,13 +319,19 @@ if st.session_state.search_performed and st.session_state.businesses:
             "Website": st.column_config.LinkColumn(
                 "Website",
                 help="Business website",
-                width="small"
+                width="medium"
             ),
             "Email": st.column_config.TextColumn(
                 "Email",
                 width="medium"
+            ),
+            "Link": st.column_config.LinkColumn(
+                "Google Maps",
+                help="View on Google Maps",
+                width="medium"
             )
-        }
+        },
+        height=600
     )
     
     st.write("---")
