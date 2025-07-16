@@ -1,4 +1,4 @@
-# ✅ Streamlit Business Finder – FIXED VERSION with safe SerpAPI parsing
+# ✅ Streamlit Business Finder – FINAL VERSION with Google Maps links + stable CRM sync using SerpAPI
 
 import streamlit as st
 import pandas as pd
@@ -29,7 +29,7 @@ keywords = st.text_input("Search keywords (comma-separated)", "plumber, electric
 radius = st.slider("Search radius (miles)", 1, 20, 5)
 search_button = st.button("Search")
 
-# SerpAPI Lead Fetching
+# Search Logic using SerpAPI
 def fetch_leads(postcode, keyword):
     search = GoogleSearch({
         "q": f"{keyword} near {postcode}",
@@ -43,13 +43,11 @@ def fetch_leads(postcode, keyword):
     leads = []
     for place in results.get("local_results", []):
         name = place.get("title", "")
-        gps_data = place.get("gps_coordinates", {})
+        gps_data = place.get("gps_coordinates")
         if isinstance(gps_data, dict):
             maps_review_url = gps_data.get("link")
         else:
-            maps_review_url = None
-
-        maps_review_url = maps_review_url or f"https://www.google.com/maps/search/?api=1&query={quote_plus(name + ' ' + postcode)}"
+            maps_review_url = f"https://www.google.com/maps/search/?api=1&query={quote_plus(name + ' ' + postcode)}"
 
         leads.append({
             "Business Name": f"[📍 {name}]({maps_review_url})",
