@@ -11,6 +11,12 @@ API_KEY = "6ba2e2001a696a5702e9a3ce0d491454f20226ff2bf0d48bb838e0562e57f847"
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1A0AXN6o3qrPn38XQwnkx_StTAtGQ9M97FJA-2rW3Omo/edit"
 SHEET_NAME = "CRM"
 
+# Initialize session state
+if 'businesses' not in st.session_state:
+    st.session_state.businesses = []
+if 'search_performed' not in st.session_state:
+    st.session_state.search_performed = False
+
 def get_google_sheets_client():
     """Initialize Google Sheets client using Streamlit secrets"""
     try:
@@ -32,11 +38,23 @@ def get_google_sheets_client():
             "auth_provider_x509_cert_url": st.secrets["google_service_account"]["auth_provider_x509_cert_url"],
             "client_x509_cert_url": st.secrets["google_service_account"]["client_x509_cert_url"]
         }
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-        client = gspread.authorize(creds)
-        sheet = client.open_by_url(SHEET_URL).worksheet(SHEET_NAME)
-        st.success("✅ Connected to Google Sheets")
-        return sheet
+        try:
+            sheet = client.open_by_url(SHEET_URL).worksheet(SHEET_NAME)
+            st.success("✅ Connected to Google Sheets")
+            return sheet
+        except gspread.WorksheetNotFound:
+            st.error(f"❌ Worksheet '{SHEET_NAME}' not found. Available worksheets:")
+            try:
+                spreadsheet = client.open_by_url(SHEET_URL)
+                worksheets = [ws.title for ws in spreadsheet.worksheets()]
+                st.write(worksheets)
+                return None
+            except Exception as e2:
+                st.error(f"❌ Could not access spreadsheet: {str(e2)}")
+                return None
+        except Exception as e:
+            st.error(f"❌ Error accessing Google Sheets: {str(e)}")
+            return None
     except Exception as e:
         st.error(f"Error connecting to Google Sheets: {str(e)}")
         return None
@@ -134,9 +152,13 @@ def push_to_crm(sheet, business_data):
                 st.error(f"Error reading CRM data: {str(e)}")
                 return False
             
+            # Check for duplicates
+            business_name = str(business_data["Business Name"]).strip().lower()
+            business_link = str(business_data["Link"]).strip()
+            
             exists = any(
-                str(r.get("Business Name", "")).strip().lower() == str(business_data["Business Name"]).strip().lower() or 
-                str(r.get("Link", "")).strip() == str(business_data["Link"]).strip()
+                str(r.get("Business Name", "")).strip().lower() == business_name or 
+                str(r.get("Link", "")).strip() == business_link
                 for r in crm_data
             )
             
@@ -145,25 +167,30 @@ def push_to_crm(sheet, business_data):
                 return False
             
         with st.spinner("Adding business to CRM..."):
-            # Prepare data for insertion
+            # Prepare data for insertion - ensure all values are strings
             row_data = [
-                str(business_data["Business Name"]),
-                str(business_data["Review Score"]),
-                str(business_data["Total Reviews"]),
-                str(business_data["Location"]),
-                str(business_data["Address"]),
-                str(business_data["Link"]),
-                str(business_data["Phone"]),
-                str(business_data["Website"]),
-                str(business_data["Reviews"]),
-                str(business_data["Email"]),
-                str(business_data["Scraped On"]),
-                str(business_data["Notes"])
+                str(business_data.get("Business Name", "")),
+                str(business_data.get("Review Score", "")),
+                str(business_data.get("Total Reviews", "")),
+                str(business_data.get("Location", "")),
+                str(business_data.get("Address", "")),
+                str(business_data.get("Link", "")),
+                str(business_data.get("Phone", "")),
+                str(business_data.get("Website", "")),
+                str(business_data.get("Reviews", "")),
+                str(business_data.get("Email", "")),
+                str(business_data.get("Scraped On", "")),
+                str(business_data.get("Notes", ""))
             ]
             
             # Append new row
             sheet.append_row(row_data)
             st.success("✅ Successfully pushed to CRM!")
+            
+            # Add a small delay to ensure the data is written
+            import time
+            time.sleep(1)
+            
             return True
     
     except Exception as e:
@@ -198,41 +225,51 @@ if st.button("Search"):
     else:
         with st.spinner("Searching for businesses..."):
             businesses = fetch_leads(postcode, query)
+            st.session_state.businesses = businesses
+            st.session_state.search_performed = True
         
         if not businesses:
             st.warning("No businesses found. Try a different postcode or keyword.")
         else:
-            df = pd.DataFrame(businesses)
-            # Sort by review score and total reviews
-            df["Review Score"] = pd.to_numeric(df["Review Score"], errors='coerce')
-            df["Total Reviews"] = pd.to_numeric(df["Total Reviews"], errors='coerce')
-            df = df.sort_values(by=["Review Score", "Total Reviews"], ascending=False, na_position='last')
-            
             st.success(f"Found {len(businesses)} businesses!")
+
+# Display results from session state
+if st.session_state.search_performed and st.session_state.businesses:
+    df = pd.DataFrame(st.session_state.businesses)
+    # Sort by review score and total reviews
+    df["Review Score"] = pd.to_numeric(df["Review Score"], errors='coerce')
+    df["Total Reviews"] = pd.to_numeric(df["Total Reviews"], errors='coerce')
+    df = df.sort_values(by=["Review Score", "Total Reviews"], ascending=False, na_position='last')
+    
+    st.write("---")
+    st.subheader("Search Results")
+    
+    # Display results
+    for i, row in df.iterrows():
+        with st.container():
+            st.markdown("---")
+            st.markdown(f"### 🔗 [{row['Business Name']}]({row['Link']})")
+            st.write(f"📍 **Address:** {row['Address']}")
+            st.write(f"⭐ **Rating:** {row['Review Score']} from {row['Total Reviews']} reviews")
+            st.write(f"📞 **Phone:** {row['Phone']}")
+            if row['Website']:
+                st.write(f"🌐 **Website:** [{row['Website']}]({row['Website']})")
+            if row['Email']:
+                st.write(f"✉️ **Email:** {row['Email']}")
             
-            # Display results
-            for i, row in df.iterrows():
-                st.markdown("---")
-                st.markdown(f"### 🔗 [{row['Business Name']}]({row['Link']})")
-                st.write(f"📍 **Address:** {row['Address']}")
-                st.write(f"⭐ **Rating:** {row['Review Score']} from {row['Total Reviews']} reviews")
-                st.write(f"📞 **Phone:** {row['Phone']}")
-                if row['Website']:
-                    st.write(f"🌐 **Website:** [{row['Website']}]({row['Website']})")
-                if row['Email']:
-                    st.write(f"✉️ **Email:** {row['Email']}")
-                
-                # Push to CRM button
-                if sheet and st.button(f"Push to CRM", key=f"push_{i}"):
-                    push_to_crm(sheet, row)
-                elif not sheet:
-                    st.error("❌ CRM unavailable - Google Sheets not connected")
-            
-            # Download CSV
-            csv_data = df.to_csv(index=False)
-            st.download_button(
-                label="⬇️ Download Results as CSV",
-                data=csv_data,
-                file_name=f"business_results_{postcode}_{query}_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
+            # Push to CRM button
+            if sheet and st.button(f"Push to CRM", key=f"push_{i}"):
+                success = push_to_crm(sheet, row)
+                if success:
+                    st.rerun()  # Refresh to show updated status
+            elif not sheet:
+                st.error("❌ CRM unavailable - Google Sheets not connected")
+    
+    # Download CSV
+    csv_data = df.to_csv(index=False)
+    st.download_button(
+        label="⬇️ Download Results as CSV",
+        data=csv_data,
+        file_name=f"business_results_{postcode}_{query}_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime="text/csv"
+    )
