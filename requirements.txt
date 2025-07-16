@@ -7,3 +7,4 @@ google-auth
 google-auth-oauthlib
 serpapi
 beautifulsoup4
+git+https://github.com/serpapi/google-search-results-python
