@@ -5,5 +5,4 @@ gspread
 tabulate
 google-auth
 google-auth-oauthlib
-beautifulsoup4
-git+https://github.com/serpapi/google-search-results-python
+serpapi
