@@ -31,34 +31,37 @@ radius = st.slider("Search radius (miles)", 1, 20, 5)
 search_button = st.button("Search")
 
 # Search Logic using Google Maps URLs
+from serpapi import GoogleSearch
+
 def fetch_leads(postcode, keyword):
-    query = f"{keyword} near {postcode}"
-    url = f"https://www.google.com/search?q={quote_plus(query)}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, headers=headers)
-    soup = BeautifulSoup(response.text, "html.parser")
-    results = []
-    for g in soup.select(".tF2Cxc"):
-        title_elem = g.select_one("h3")
-        business_name = title_elem.text if title_elem else ""
-        business_link = g.select_one(".yuRUbf a")
-        href = business_link["href"] if business_link else ""
-        if business_name and href:
-            maps_review_url = f"https://www.google.com/maps/search/?api=1&query={quote_plus(business_name + ' ' + postcode)}"
-            results.append({
-                "Business Name": f"[📍 {business_name}]({maps_review_url})",
-                "Review Score": "",
-                "Total Reviews": "",
-                "Location": postcode,
-                "Address": "",
-                "Phone": "",
-                "Website": "",
-                "Reviews": "",
-                "Email": "",
-                "Scraped On": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "Notes": ""
-            })
-    return results
+    search = GoogleSearch({
+        "q": f"{keyword} near {postcode}",
+        "location": postcode,
+        "hl": "en",
+        "gl": "uk",
+        "api_key": st.secrets["serpapi_key"]
+    })
+    results = search.get_dict()
+
+    leads = []
+    for place in results.get("local_results", []):
+        name = place.get("title", "")
+        maps_review_url = place.get("gps_coordinates", {}).get("link") or f"https://www.google.com/maps/search/?api=1&query={quote_plus(name + ' ' + postcode)}"
+
+        leads.append({
+            "Business Name": f"[📍 {name}]({maps_review_url})",
+            "Review Score": place.get("rating", ""),
+            "Total Reviews": place.get("reviews", ""),
+            "Location": postcode,
+            "Address": place.get("address", ""),
+            "Phone": place.get("phone", ""),
+            "Website": place.get("website", ""),
+            "Reviews": place.get("description", ""),
+            "Email": "",
+            "Scraped On": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "Notes": ""
+        })
+    return leads
 
 # Main execution
 if search_button:
