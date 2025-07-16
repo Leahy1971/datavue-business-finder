@@ -63,7 +63,23 @@ def fetch_leads(postcode, query_term):
             name = place.get("title", "")
             reviews = place.get("reviews", "")
             score = place.get("rating", "")
-            link = place.get("link", "")
+            # Use gps_coordinates to construct proper Google Maps URL
+            gps = place.get("gps_coordinates", {})
+            place_id = place.get("place_id", "")
+            
+            # Construct Google Maps URL that goes to reviews
+            if place_id:
+                # Use place_id for most accurate link to reviews
+                google_maps_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+            elif gps.get("latitude") and gps.get("longitude"):
+                # Fallback to coordinates
+                lat = gps["latitude"]
+                lng = gps["longitude"]
+                google_maps_url = f"https://www.google.com/maps/place/{lat},{lng}"
+            else:
+                # Final fallback to search URL
+                google_maps_url = place.get("link", "")
+            
             address = place.get("address", "")
             phone = place.get("phone", "")
             website = place.get("website", "")
@@ -80,7 +96,7 @@ def fetch_leads(postcode, query_term):
                 "Total Reviews": total_reviews,
                 "Location": postcode,
                 "Address": address,
-                "Link": link,
+                "Link": google_maps_url,
                 "Phone": phone,
                 "Website": website,
                 "Email": email,
