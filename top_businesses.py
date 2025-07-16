@@ -159,7 +159,7 @@ if st.button("Search"):
             # Sort by review score and total reviews
             df["Review Score"] = pd.to_numeric(df["Review Score"], errors='coerce')
             df["Total Reviews"] = pd.to_numeric(df["Total Reviews"], errors='coerce')
-            df = df.sort_values(by=["Review Score", "Total Reviews"], ascending=False, na_last=True)
+            df = df.sort_values(by=["Review Score", "Total Reviews"], ascending=False, na_position='last')
             
             st.success(f"Found {len(businesses)} businesses!")
             
