@@ -175,11 +175,6 @@ def fetch_leads(postcode, query_term):
             if not total_reviews and place.get("user_ratings_total"):
                 total_reviews = str(place.get("user_ratings_total"))
             
-            # Debug: Print the place data structure for first few results
-            if len(businesses) < 3:
-                st.write(f"Debug - Place data for {name}:")
-                st.json(place)
-            
             businesses.append({
                 "Business Name": name,
                 "Review Score": score,
