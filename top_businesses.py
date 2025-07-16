@@ -37,11 +37,16 @@ def get_google_sheets_client():
 def fetch_leads(postcode, query_term):
     """Fetch business leads from Google Maps via SerpAPI"""
     try:
+        # Format location for UK postcodes to improve search accuracy
+        location = f"{postcode}, UK"
+        search_query = f"{query_term} near {postcode}, UK"
+        
         params = {
             "engine": "google_maps",
-            "q": query_term,
-            "location": postcode,
+            "q": search_query,
+            "location": location,
             "hl": "en",
+            "gl": "uk",  # Country code for UK
             "type": "search",
             "api_key": API_KEY
         }
