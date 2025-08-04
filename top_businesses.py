@@ -664,7 +664,86 @@ def get_companies_house_financials(company_number):
     except Exception as e:
         return {}, f"Error getting financials: {str(e)}"
 
-def search_companies_house_web(business_name, postcode=None):
+def search_companies_house(business_name, postcode=None):
+    """Search Companies House for matching companies via API"""
+    
+    if not COMPANIES_HOUSE_API_KEY:
+        return [], "Companies House API key not configured"
+    
+    try:
+        # Clean business name for search
+        search_name = re.sub(r'\b(ltd|limited|plc|llp|&|and)\b', '', business_name.lower()).strip()
+        search_name = re.sub(r'[^\w\s]', ' ', search_name).strip()
+        
+        # Companies House search API
+        url = f"{COMPANIES_HOUSE_BASE_URL}/search/companies"
+        
+        # Try Basic Auth (most common method)
+        import base64
+        auth_string = f"{COMPANIES_HOUSE_API_KEY}:"
+        auth_bytes = auth_string.encode('ascii')
+        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
+        
+        headers = {
+            'Authorization': f'Basic {auth_b64}',
+            'Accept': 'application/json'
+        }
+        
+        params = {
+            'q': search_name,
+            'items_per_page': 10
+        }
+        
+        response = requests.get(url, headers=headers, params=params)
+        
+        if response.status_code == 401:
+            return [], "Invalid Companies House API key - API authentication failed"
+        elif response.status_code == 429:
+            return [], "Rate limit exceeded - please wait a moment and try again"
+        elif response.status_code != 200:
+            return [], f"Companies House API error: {response.status_code}"
+        
+        data = response.json()
+        companies = data.get('items', [])
+        
+        if not companies:
+            return [], f"No companies found for search term: {search_name}"
+        
+        # Filter and score matches
+        matches = []
+        for company in companies:
+            company_name = company.get('title', '')
+            company_address = company.get('address_snippet', '')
+            company_number = company.get('company_number', '')
+            company_status = company.get('company_status', '')
+            
+            # Calculate similarity score
+            name_similarity = similarity_score(business_name, company_name)
+            
+            # Boost score if postcode matches
+            postcode_boost = 0
+            if postcode and postcode.upper() in company_address.upper():
+                postcode_boost = 0.2
+            
+            total_score = name_similarity + postcode_boost
+            
+            # Only include active companies with reasonable similarity
+            if company_status == 'active' and total_score > 0.4:
+                matches.append({
+                    'company_name': company_name,
+                    'company_number': company_number,
+                    'address': company_address,
+                    'status': company_status,
+                    'similarity_score': total_score
+                })
+        
+        # Sort by similarity score
+        matches.sort(key=lambda x: x['similarity_score'], reverse=True)
+        
+        return matches[:3], None  # Return top 3 matches
+        
+    except Exception as e:
+        return [], f"Error searching Companies House API: {str(e)}"
     """Fallback: Search Companies House via web scraping when API fails"""
     
     try:
