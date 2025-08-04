@@ -440,7 +440,8 @@ def search_companies_house(business_name, postcode=None):
         # Companies House search API
         url = f"{COMPANIES_HOUSE_BASE_URL}/search/companies"
         
-        # Companies House requires Basic Auth with API key as username and empty password
+        # Try different authentication methods
+        # Method 1: Basic Auth with API key as username
         import base64
         auth_string = f"{COMPANIES_HOUSE_API_KEY}:"
         auth_bytes = auth_string.encode('ascii')
@@ -458,15 +459,44 @@ def search_companies_house(business_name, postcode=None):
         
         response = requests.get(url, headers=headers, params=params)
         
+        # Debug information
+        debug_info = f"Status: {response.status_code}, URL: {url}"
+        
         if response.status_code == 401:
-            return [], "Invalid Companies House API key - please check your API key is correct"
+            # Try alternative authentication method
+            headers_alt = {
+                'Authorization': f'Bearer {COMPANIES_HOUSE_API_KEY}',
+                'Accept': 'application/json'
+            }
+            
+            response_alt = requests.get(url, headers=headers_alt, params=params)
+            
+            if response_alt.status_code == 401:
+                # Try with API key in header
+                headers_alt2 = {
+                    'X-API-Key': COMPANIES_HOUSE_API_KEY,
+                    'Accept': 'application/json'
+                }
+                
+                response_alt2 = requests.get(url, headers=headers_alt2, params=params)
+                
+                if response_alt2.status_code == 401:
+                    return [], f"Authentication failed with all methods. Debug: {debug_info}. API Key length: {len(COMPANIES_HOUSE_API_KEY)}. Key starts with: {COMPANIES_HOUSE_API_KEY[:10]}..."
+                else:
+                    response = response_alt2
+            else:
+                response = response_alt
+        
         elif response.status_code == 429:
             return [], "Rate limit exceeded - please wait a moment and try again"
         elif response.status_code != 200:
-            return [], f"Companies House API error: {response.status_code} - {response.text}"
+            return [], f"Companies House API error: {response.status_code} - {response.text[:200]}"
         
         data = response.json()
         companies = data.get('items', [])
+        
+        if not companies:
+            return [], f"No companies found for search term: {search_name}"
         
         # Filter and score matches
         matches = []
