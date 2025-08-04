@@ -413,6 +413,8 @@ def fetch_leads(postcode, query_term, search_filters):
 def enhance_business_data(business_data, api_key):
     """Search the web for missing business contact information and turnover data"""
     
+    import re  # Import re module at the top of the function
+    
     enhanced_data = business_data.copy()
     search_results = []
     
@@ -478,7 +480,6 @@ def enhance_business_data(business_data, api_key):
                 
                 # Look for phone numbers in snippets
                 if missing_phone:
-                    import re
                     # UK phone number patterns
                     phone_patterns = [
                         r'\b(?:0|\+44)\d{2,4}\s?\d{3,4}\s?\d{3,4}\b',  # UK landline/mobile
