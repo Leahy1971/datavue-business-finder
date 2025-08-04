@@ -427,25 +427,61 @@ def similarity_score(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def test_companies_house_api():
-    """Test Companies House API connection"""
+    """Test Companies House API connection with different auth methods"""
     
     if not COMPANIES_HOUSE_API_KEY:
         return "No API key configured"
     
     try:
-        # Test with a simple, known company search
         url = f"{COMPANIES_HOUSE_BASE_URL}/search/companies"
+        params = {'q': 'tesco', 'items_per_page': 1}
         
-        # Use requests.auth.HTTPBasicAuth for proper Basic Auth
+        # Method 1: Basic Auth with API key as username (standard)
         import requests.auth
-        
-        response = requests.get(
+        response1 = requests.get(
             url, 
             auth=requests.auth.HTTPBasicAuth(COMPANIES_HOUSE_API_KEY, ''),
-            params={'q': 'tesco', 'items_per_page': 1}
+            params=params
         )
         
-        return f"Status: {response.status_code}, Response: {response.text[:200]}"
+        if response1.status_code == 200:
+            return f"✅ Method 1 worked! Status: {response1.status_code}"
+        
+        # Method 2: API key in Authorization header directly
+        headers2 = {'Authorization': COMPANIES_HOUSE_API_KEY}
+        response2 = requests.get(url, headers=headers2, params=params)
+        
+        if response2.status_code == 200:
+            return f"✅ Method 2 worked! Status: {response2.status_code}"
+        
+        # Method 3: Try with Client ID instead of Client Secret
+        # (In case we need the Client ID: 6ec3036e-cfc1-4a59-870f-e5d689a452f1)
+        client_id = "6ec3036e-cfc1-4a59-870f-e5d689a452f1"
+        response3 = requests.get(
+            url,
+            auth=requests.auth.HTTPBasicAuth(client_id, ''),
+            params=params
+        )
+        
+        if response3.status_code == 200:
+            return f"✅ Method 3 (Client ID) worked! Status: {response3.status_code}"
+        
+        # Method 4: Try Client ID with Client Secret as password
+        response4 = requests.get(
+            url,
+            auth=requests.auth.HTTPBasicAuth(client_id, COMPANIES_HOUSE_API_KEY),
+            params=params
+        )
+        
+        if response4.status_code == 200:
+            return f"✅ Method 4 (ID+Secret) worked! Status: {response4.status_code}"
+        
+        # Return all failed attempts
+        return f"""❌ All methods failed:
+Method 1 (Secret as username): {response1.status_code} - {response1.text[:100]}
+Method 2 (Direct header): {response2.status_code} - {response2.text[:100]}  
+Method 3 (Client ID): {response3.status_code} - {response3.text[:100]}
+Method 4 (ID+Secret): {response4.status_code} - {response4.text[:100]}"""
         
     except Exception as e:
         return f"Error: {str(e)}"
