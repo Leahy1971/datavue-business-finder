@@ -6,11 +6,17 @@ from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 import time
+import re
+from difflib import SequenceMatcher
 
 # ====== CONFIGURATION ======
 API_KEY = "6ba2e2001a696a5702e9a3ce0d491454f20226ff2bf0d48bb838e0562e57f847"
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1A0AXN6o3qrPn38XQwnkx_StTAtGQ9M97FJA-2rW3Omo/edit"
 SHEET_NAME = "CRM"
+
+# Companies House API configuration
+COMPANIES_HOUSE_API_KEY = st.secrets.get("companies_house_api_key", "")  # Add to your secrets
+COMPANIES_HOUSE_BASE_URL = "https://api.company-information.service.gov.uk"
 
 # Initialize session state
 if 'businesses' not in st.session_state:
@@ -340,6 +346,9 @@ def fetch_leads(postcode, query_term, search_filters):
                 # Create business record
                 business = {
                     "Business Name": name,
+                    "Official Name": "",  # Will be populated by Companies House
+                    "Company Number": "",  # Companies House number
+                    "Company Type": "",    # Ltd, PLC, etc.
                     "Review Score": score,
                     "Total Reviews": total_reviews,
                     "Location": postcode,
@@ -350,6 +359,9 @@ def fetch_leads(postcode, query_term, search_filters):
                     "Email": email,
                     "Employee Count": employee_count,
                     "Turnover": turnover,
+                    "SIC Codes": "",      # Business activity codes
+                    "Incorporation Date": "",
+                    "Last Accounts Date": "",
                     "Hours": hours,
                     "Open Status": is_open,
                     "Scraped On": datetime.now().strftime("%Y-%m-%d"),
@@ -410,7 +422,195 @@ def fetch_leads(postcode, query_term, search_filters):
         st.error(f"Error in fetch_leads: {str(e)}")
         return all_businesses
 
-def enhance_business_data(business_data, api_key):
+def similarity_score(a, b):
+    """Calculate similarity between two strings"""
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+def search_companies_house(business_name, postcode=None):
+    """Search Companies House for matching companies"""
+    
+    if not COMPANIES_HOUSE_API_KEY:
+        return [], "Companies House API key not configured"
+    
+    try:
+        # Clean business name for search
+        search_name = re.sub(r'\b(ltd|limited|plc|llp|&|and)\b', '', business_name.lower()).strip()
+        search_name = re.sub(r'[^\w\s]', ' ', search_name).strip()
+        
+        # Companies House search API
+        url = f"{COMPANIES_HOUSE_BASE_URL}/search/companies"
+        headers = {
+            'Authorization': COMPANIES_HOUSE_API_KEY
+        }
+        
+        params = {
+            'q': search_name,
+            'items_per_page': 10
+        }
+        
+        response = requests.get(url, headers=headers, params=params)
+        
+        if response.status_code != 200:
+            return [], f"Companies House API error: {response.status_code}"
+        
+        data = response.json()
+        companies = data.get('items', [])
+        
+        # Filter and score matches
+        matches = []
+        for company in companies:
+            company_name = company.get('title', '')
+            company_address = company.get('address_snippet', '')
+            company_number = company.get('company_number', '')
+            company_status = company.get('company_status', '')
+            
+            # Calculate similarity score
+            name_similarity = similarity_score(business_name, company_name)
+            
+            # Boost score if postcode matches
+            postcode_boost = 0
+            if postcode and postcode.upper() in company_address.upper():
+                postcode_boost = 0.2
+            
+            total_score = name_similarity + postcode_boost
+            
+            # Only include active companies with reasonable similarity
+            if company_status == 'active' and total_score > 0.4:
+                matches.append({
+                    'company_name': company_name,
+                    'company_number': company_number,
+                    'address': company_address,
+                    'status': company_status,
+                    'similarity_score': total_score
+                })
+        
+        # Sort by similarity score
+        matches.sort(key=lambda x: x['similarity_score'], reverse=True)
+        
+        return matches[:3], None  # Return top 3 matches
+        
+    except Exception as e:
+        return [], f"Error searching Companies House: {str(e)}"
+
+def get_companies_house_financials(company_number):
+    """Get financial data from Companies House"""
+    
+    if not COMPANIES_HOUSE_API_KEY:
+        return {}, "Companies House API key not configured"
+    
+    try:
+        # Get company filing history
+        url = f"{COMPANIES_HOUSE_BASE_URL}/company/{company_number}/filing-history"
+        headers = {
+            'Authorization': COMPANIES_HOUSE_API_KEY
+        }
+        
+        params = {
+            'category': 'accounts',
+            'items_per_page': 5
+        }
+        
+        response = requests.get(url, headers=headers, params=params)
+        
+        if response.status_code != 200:
+            return {}, f"Filing history API error: {response.status_code}"
+        
+        filings_data = response.json()
+        filings = filings_data.get('items', [])
+        
+        # Get company details for additional info
+        company_url = f"{COMPANIES_HOUSE_BASE_URL}/company/{company_number}"
+        company_response = requests.get(company_url, headers=headers)
+        
+        company_details = {}
+        if company_response.status_code == 200:
+            company_details = company_response.json()
+        
+        # Extract financial information
+        financial_data = {
+            'company_number': company_number,
+            'official_name': company_details.get('company_name', ''),
+            'incorporation_date': company_details.get('date_of_creation', ''),
+            'company_type': company_details.get('type', ''),
+            'sic_codes': company_details.get('sic_codes', []),
+            'accounts_due': company_details.get('accounts', {}).get('next_due', ''),
+            'last_accounts': company_details.get('accounts', {}).get('last_accounts', {}).get('period_end_on', ''),
+            'turnover': 'Not available',
+            'profit': 'Not available',
+            'employees': 'Not available'
+        }
+        
+        # Try to extract turnover from recent filings
+        for filing in filings:
+            if 'annual-return' not in filing.get('description', '').lower():
+                filing_date = filing.get('date', '')
+                if filing_date:
+                    # Note: Full accounts data requires additional API calls to specific documents
+                    # This would need document parsing which is complex
+                    financial_data['latest_filing_date'] = filing_date
+                    break
+        
+        return financial_data, None
+        
+    except Exception as e:
+        return {}, f"Error getting financials: {str(e)}"
+
+def enhance_with_companies_house(business_data):
+    """Enhance business data with Companies House information"""
+    
+    enhanced_data = business_data.copy()
+    companies_house_info = {}
+    
+    try:
+        business_name = business_data.get('Business Name', '')
+        postcode = business_data.get('Location', '')
+        
+        if not business_name:
+            return enhanced_data, "No business name provided"
+        
+        # Search for matching companies
+        matches, error = search_companies_house(business_name, postcode)
+        
+        if error:
+            return enhanced_data, f"Companies House search failed: {error}"
+        
+        if not matches:
+            return enhanced_data, "No matching companies found in Companies House"
+        
+        # Use the best match
+        best_match = matches[0]
+        company_number = best_match['company_number']
+        
+        # Get financial data
+        financial_data, fin_error = get_companies_house_financials(company_number)
+        
+        if fin_error:
+            companies_house_info = {
+                'official_name': best_match['company_name'],
+                'company_number': company_number,
+                'match_score': f"{best_match['similarity_score']:.2f}",
+                'error': fin_error
+            }
+        else:
+            companies_house_info = financial_data
+            companies_house_info['match_score'] = f"{best_match['similarity_score']:.2f}"
+            
+            # Update enhanced data with official information
+            enhanced_data['Official Name'] = financial_data.get('official_name', '')
+            enhanced_data['Company Number'] = company_number
+            enhanced_data['Company Type'] = financial_data.get('company_type', '')
+            enhanced_data['Incorporation Date'] = financial_data.get('incorporation_date', '')
+            enhanced_data['SIC Codes'] = ', '.join(financial_data.get('sic_codes', [])[:3])  # First 3 SIC codes
+            enhanced_data['Last Accounts Date'] = financial_data.get('last_accounts', '')
+            
+            # Override turnover if we have Companies House data
+            if financial_data.get('turnover') and financial_data['turnover'] != 'Not available':
+                enhanced_data['Turnover'] = financial_data['turnover']
+        
+        return enhanced_data, companies_house_info
+        
+    except Exception as e:
+        return enhanced_data, f"Error enhancing with Companies House: {str(e)}"
     """Search the web for missing business contact information and turnover data"""
     
     import re  # Import re module at the top of the function
@@ -616,6 +816,9 @@ def enhance_business_data(business_data, api_key):
             # Prepare data for insertion - ensure all values are strings
             row_data = [
                 str(business_data.get("Business Name", "")),
+                str(business_data.get("Official Name", "")),
+                str(business_data.get("Company Number", "")),
+                str(business_data.get("Company Type", "")),
                 str(business_data.get("Review Score", "")),
                 str(business_data.get("Total Reviews", "")),
                 str(business_data.get("Location", "")),
@@ -627,6 +830,9 @@ def enhance_business_data(business_data, api_key):
                 str(business_data.get("Email", "")),
                 str(business_data.get("Employee Count", "")),
                 str(business_data.get("Turnover", "")),
+                str(business_data.get("SIC Codes", "")),
+                str(business_data.get("Incorporation Date", "")),
+                str(business_data.get("Last Accounts Date", "")),
                 str(business_data.get("Hours", "")),
                 str(business_data.get("Open Status", "")),
                 str(business_data.get("Scraped On", "")),
@@ -648,7 +854,7 @@ def enhance_business_data(business_data, api_key):
         return False
 
 # ====== STREAMLIT UI ======
-st.title("Datavue (Top Reviewed) Biz Finder")
+st.title("🔍 Enhanced Datavue Business Finder with CRM Sync")
 st.caption("Search top-rated local businesses with advanced filtering and sync straight into your CRM Sheet")
 
 # Initialize Google Sheets connection
@@ -781,8 +987,9 @@ if st.session_state.search_performed and st.session_state.businesses:
     
     # Select and reorder columns for display
     display_columns = [
-        'Business Name', 'Review Score', 'Total Reviews', 'Employee Count', 
-        'Address', 'Phone', 'Website', 'Email', 'Turnover', 'Open Status', 'Link'
+        'Business Name', 'Official Name', 'Company Number', 'Review Score', 'Total Reviews', 
+        'Employee Count', 'Address', 'Phone', 'Website', 'Email', 'Turnover', 
+        'Company Type', 'SIC Codes', 'Open Status', 'Link'
     ]
     
     # Display the table with proper link configuration
@@ -794,6 +1001,16 @@ if st.session_state.search_performed and st.session_state.businesses:
             "Business Name": st.column_config.TextColumn(
                 "Business Name",
                 width="medium"
+            ),
+            "Official Name": st.column_config.TextColumn(
+                "Official Name",
+                help="Companies House registered name",
+                width="medium"
+            ),
+            "Company Number": st.column_config.TextColumn(
+                "Co. Number",
+                help="Companies House registration number",
+                width="small"
             ),
             "Review Score": st.column_config.NumberColumn(
                 "Rating",
@@ -832,6 +1049,16 @@ if st.session_state.search_performed and st.session_state.businesses:
                 "Turnover",
                 help="Business turnover/revenue",
                 width="small"
+            ),
+            "Company Type": st.column_config.TextColumn(
+                "Type",
+                help="Company type (Ltd, PLC, etc.)",
+                width="small"
+            ),
+            "SIC Codes": st.column_config.TextColumn(
+                "SIC Codes",
+                help="Standard Industrial Classification codes",
+                width="medium"
             ),
             "Open Status": st.column_config.TextColumn(
                 "Status",
@@ -946,6 +1173,73 @@ if st.session_state.search_performed and st.session_state.businesses:
                     if changes_made:
                         if st.button("🔄 Refresh Results", key="refresh_after_enhancement"):
                             st.rerun()
+    
+    # Companies House Enhancement Section
+    st.write("**Companies House Lookup:**")
+    col8, col9 = st.columns([3, 2])
+    
+    with col8:
+        # Business selector for Companies House lookup
+        ch_business = st.selectbox(
+            "Select a business to lookup in Companies House:",
+            options=range(len(business_names_for_enhancement)),
+            format_func=lambda x: f"{business_names_for_enhancement[x]} - {('✅ Already matched' if df.iloc[x]['Company Number'] else '🔍 Not matched')}" if x < len(business_names_for_enhancement) else "",
+            key="companies_house_selector"
+        )
+    
+    with col9:
+        st.write("")  # Add some vertical space to align with selectbox
+        if st.button("🏢 Lookup Companies House", use_container_width=True):
+            if ch_business is not None:
+                selected_business_data = df.iloc[ch_business].to_dict()
+                
+                with st.spinner("🔍 Searching Companies House records..."):
+                    enhanced_data, ch_info = enhance_with_companies_house(selected_business_data)
+                
+                # Show results
+                st.write("**Companies House Results:**")
+                
+                if isinstance(ch_info, str):
+                    # Error message
+                    st.warning(f"⚠️ {ch_info}")
+                elif isinstance(ch_info, dict) and ch_info.get('error'):
+                    # Partial success with error
+                    st.info(f"✅ Found company match (Score: {ch_info.get('match_score', 'N/A')})")
+                    st.warning(f"⚠️ {ch_info['error']}")
+                    if ch_info.get('official_name'):
+                        st.write(f"**Official Name:** {ch_info['official_name']}")
+                    if ch_info.get('company_number'):
+                        st.write(f"**Company Number:** {ch_info['company_number']}")
+                else:
+                    # Full success
+                    st.success(f"✅ Companies House match found! (Similarity: {ch_info.get('match_score', 'N/A')})")
+                    
+                    # Display key information
+                    col_a, col_b = st.columns(2)
+                    with col_a:
+                        st.write(f"**Official Name:** {ch_info.get('official_name', 'N/A')}")
+                        st.write(f"**Company Number:** {ch_info.get('company_number', 'N/A')}")
+                        st.write(f"**Company Type:** {ch_info.get('company_type', 'N/A')}")
+                        st.write(f"**Incorporation:** {ch_info.get('incorporation_date', 'N/A')}")
+                    
+                    with col_b:
+                        st.write(f"**SIC Codes:** {', '.join(ch_info.get('sic_codes', [])[:3])}")
+                        st.write(f"**Last Accounts:** {ch_info.get('last_accounts', 'N/A')}")
+                        st.write(f"**Accounts Due:** {ch_info.get('accounts_due', 'N/A')}")
+                        if ch_info.get('latest_filing_date'):
+                            st.write(f"**Latest Filing:** {ch_info['latest_filing_date']}")
+                
+                # Update the dataframe with enhanced data
+                if enhanced_data != selected_business_data:
+                    # Update the session state with enhanced data
+                    for col, value in enhanced_data.items():
+                        if col in df.columns:
+                            st.session_state.businesses[ch_business][col] = value
+                    
+                    st.success("🎉 Business data updated with Companies House information!")
+                    
+                    if st.button("🔄 Refresh Results", key="refresh_after_ch_lookup"):
+                        st.rerun()
     
     st.write("")  # Add some vertical spacing
     
