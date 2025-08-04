@@ -472,6 +472,10 @@ def enhance_business_data(business_data, api_key):
             # Extract data from organic results
             organic_results = results.get("organic_results", [])
             
+            if not organic_results:
+                search_results.append(f"No search results found for: {query}")
+                continue
+            
             for result in organic_results:
                 snippet = result.get("snippet", "").lower()
                 title = result.get("title", "").lower()
@@ -514,30 +518,55 @@ def enhance_business_data(business_data, api_key):
                 
                 # Look for turnover/revenue information
                 if missing_turnover:
-                    # Patterns for UK business turnover
+                    # Patterns for UK business turnover - more specific patterns
                     turnover_patterns = [
-                        r'turnover[:\s]*£?([\d,]+(?:\.\d+)?)\s*(?:million|m|k|thousand)?',
-                        r'revenue[:\s]*£?([\d,]+(?:\.\d+)?)\s*(?:million|m|k|thousand)?',
-                        r'annual sales[:\s]*£?([\d,]+(?:\.\d+)?)\s*(?:million|m|k|thousand)?',
-                        r'£([\d,]+(?:\.\d+)?)\s*(?:million|m|k|thousand)?\s*turnover',
-                        r'£([\d,]+(?:\.\d+)?)\s*(?:million|m|k|thousand)?\s*revenue'
+                        r'turnover[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
+                        r'revenue[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
+                        r'annual sales[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
+                        r'£([\d,]+(?:\.\d+)?)\s*(million|m)\s*turnover',
+                        r'£([\d,]+(?:\.\d+)?)\s*(million|m)\s*revenue',
+                        r'turnover[:\s]+£([\d,]+(?:\.\d+)?)',
+                        r'revenue[:\s]+£([\d,]+(?:\.\d+)?)',
                     ]
                     
                     for pattern in turnover_patterns:
                         turnover_matches = re.findall(pattern, full_text, re.IGNORECASE)
                         if turnover_matches:
-                            turnover_value = turnover_matches[0]
-                            # Clean and format the turnover
-                            if 'million' in full_text.lower() or 'm' in full_text.lower():
-                                enhanced_data['Turnover'] = f"£{turnover_value}M"
-                            elif 'thousand' in full_text.lower() or 'k' in full_text.lower():
-                                enhanced_data['Turnover'] = f"£{turnover_value}K"
-                            else:
-                                enhanced_data['Turnover'] = f"£{turnover_value}"
+                            for match in turnover_matches:
+                                if isinstance(match, tuple):
+                                    # Handle patterns with scale (million, k, etc.)
+                                    if len(match) >= 2:
+                                        value, scale = match[0], match[1].lower()
+                                    else:
+                                        value, scale = match[0], ""
+                                else:
+                                    # Single value match
+                                    value, scale = match, ""
+                                
+                                # Clean the value and check it's valid
+                                value = value.replace(',', '').strip()
+                                if value and value.replace('.', '').isdigit():
+                                    # Format based on scale
+                                    if 'million' in scale or scale == 'm':
+                                        enhanced_data['Turnover'] = f"£{value}M"
+                                    elif 'thousand' in scale or scale == 'k':
+                                        enhanced_data['Turnover'] = f"£{value}K"
+                                    else:
+                                        # Try to guess scale based on value size
+                                        float_val = float(value)
+                                        if float_val >= 1000000:
+                                            enhanced_data['Turnover'] = f"£{float_val/1000000:.1f}M"
+                                        elif float_val >= 1000:
+                                            enhanced_data['Turnover'] = f"£{float_val/1000:.0f}K"
+                                        else:
+                                            enhanced_data['Turnover'] = f"£{value}"
+                                    
+                                    search_results.append(f"Found turnover: {enhanced_data['Turnover']}")
+                                    missing_turnover = False
+                                    break
                             
-                            search_results.append(f"Found turnover: {enhanced_data['Turnover']}")
-                            missing_turnover = False
-                            break
+                            if not missing_turnover:
+                                break
                 
                 # Look for website
                 if missing_website and link:
@@ -619,7 +648,7 @@ def enhance_business_data(business_data, api_key):
         return False
 
 # ====== STREAMLIT UI ======
-st.title("🔍 Enhanced Datavue Business Finder with CRM Sync")
+st.title("🔍 Datavue (Top Reviewed) Local Business Finder")
 st.caption("Search top-rated local businesses with advanced filtering and sync straight into your CRM Sheet")
 
 # Initialize Google Sheets connection
