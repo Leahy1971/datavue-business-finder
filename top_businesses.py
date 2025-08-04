@@ -317,6 +317,9 @@ def fetch_leads(postcode, query_term, search_filters):
                 # Extract employee count
                 employee_count = place.get("employees", "") or place.get("company_size", "")
                 
+                # Extract turnover if available
+                turnover = place.get("turnover", "") or place.get("revenue", "") or place.get("annual_sales", "")
+                
                 # Extract email
                 email = place.get("email", "") or place.get("contact_info", {}).get("email", "")
                 
@@ -346,7 +349,7 @@ def fetch_leads(postcode, query_term, search_filters):
                     "Website": website,
                     "Email": email,
                     "Employee Count": employee_count,
-                    "Price Level": price_level,
+                    "Turnover": turnover,
                     "Hours": hours,
                     "Open Status": is_open,
                     "Scraped On": datetime.now().strftime("%Y-%m-%d"),
@@ -408,7 +411,7 @@ def fetch_leads(postcode, query_term, search_filters):
         return all_businesses
 
 def enhance_business_data(business_data, api_key):
-    """Search the web for missing business contact information"""
+    """Search the web for missing business contact information and turnover data"""
     
     enhanced_data = business_data.copy()
     search_results = []
@@ -427,24 +430,29 @@ def enhance_business_data(business_data, api_key):
         missing_phone = not business_data.get('Phone', '').strip()
         missing_email = not business_data.get('Email', '').strip()
         missing_website = not business_data.get('Website', '').strip()
+        missing_turnover = not business_data.get('Turnover', '').strip()
         
-        if missing_phone or missing_email or missing_website:
+        if missing_phone or missing_email or missing_website or missing_turnover:
             # Primary search - business name + location + contact
             search_queries.append(f'"{business_name}" {location} contact phone email')
             
-            # Secondary search - business name + location + website
+            # Secondary search - business name + turnover/revenue
+            if missing_turnover:
+                search_queries.append(f'"{business_name}" {location} turnover revenue annual sales')
+            
+            # Tertiary search - business name + location + website
             if missing_website:
                 search_queries.append(f'"{business_name}" {location} website')
             
-            # Tertiary search - business name + phone number
+            # Quaternary search - business name + phone number
             if missing_phone:
                 search_queries.append(f'"{business_name}" {location} phone number mobile')
         
         if not search_queries:
-            return enhanced_data, ["All contact information already available"]
+            return enhanced_data, ["All information already available"]
         
         # Perform web searches
-        for query in search_queries[:2]:  # Limit to 2 searches to avoid API limits
+        for query in search_queries[:3]:  # Limit to 3 searches to avoid API limits
             params = {
                 "engine": "google",
                 "q": query,
@@ -466,6 +474,7 @@ def enhance_business_data(business_data, api_key):
                 snippet = result.get("snippet", "").lower()
                 title = result.get("title", "").lower()
                 link = result.get("link", "")
+                full_text = snippet + " " + title
                 
                 # Look for phone numbers in snippets
                 if missing_phone:
@@ -478,7 +487,7 @@ def enhance_business_data(business_data, api_key):
                     ]
                     
                     for pattern in phone_patterns:
-                        phone_matches = re.findall(pattern, snippet + " " + title)
+                        phone_matches = re.findall(pattern, full_text)
                         if phone_matches:
                             # Clean up the phone number
                             phone = phone_matches[0].strip()
@@ -491,7 +500,7 @@ def enhance_business_data(business_data, api_key):
                 # Look for email addresses
                 if missing_email:
                     email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-                    email_matches = re.findall(email_pattern, snippet + " " + title)
+                    email_matches = re.findall(email_pattern, full_text)
                     if email_matches:
                         # Filter out generic emails
                         valid_emails = [email for email in email_matches 
@@ -501,6 +510,33 @@ def enhance_business_data(business_data, api_key):
                             enhanced_data['Email'] = valid_emails[0]
                             search_results.append(f"Found email: {valid_emails[0]}")
                             missing_email = False
+                
+                # Look for turnover/revenue information
+                if missing_turnover:
+                    # Patterns for UK business turnover
+                    turnover_patterns = [
+                        r'turnover[:\s]*£?([\d,]+(?:\.\d+)?)\s*(?:million|m|k|thousand)?',
+                        r'revenue[:\s]*£?([\d,]+(?:\.\d+)?)\s*(?:million|m|k|thousand)?',
+                        r'annual sales[:\s]*£?([\d,]+(?:\.\d+)?)\s*(?:million|m|k|thousand)?',
+                        r'£([\d,]+(?:\.\d+)?)\s*(?:million|m|k|thousand)?\s*turnover',
+                        r'£([\d,]+(?:\.\d+)?)\s*(?:million|m|k|thousand)?\s*revenue'
+                    ]
+                    
+                    for pattern in turnover_patterns:
+                        turnover_matches = re.findall(pattern, full_text, re.IGNORECASE)
+                        if turnover_matches:
+                            turnover_value = turnover_matches[0]
+                            # Clean and format the turnover
+                            if 'million' in full_text.lower() or 'm' in full_text.lower():
+                                enhanced_data['Turnover'] = f"£{turnover_value}M"
+                            elif 'thousand' in full_text.lower() or 'k' in full_text.lower():
+                                enhanced_data['Turnover'] = f"£{turnover_value}K"
+                            else:
+                                enhanced_data['Turnover'] = f"£{turnover_value}"
+                            
+                            search_results.append(f"Found turnover: {enhanced_data['Turnover']}")
+                            missing_turnover = False
+                            break
                 
                 # Look for website
                 if missing_website and link:
@@ -515,7 +551,7 @@ def enhance_business_data(business_data, api_key):
                             missing_website = False
         
         if not search_results:
-            search_results.append("No additional contact information found")
+            search_results.append("No additional information found")
         
         return enhanced_data, search_results
         
@@ -560,7 +596,7 @@ def enhance_business_data(business_data, api_key):
                 str(business_data.get("Reviews", "")),
                 str(business_data.get("Email", "")),
                 str(business_data.get("Employee Count", "")),
-                str(business_data.get("Price Level", "")),
+                str(business_data.get("Turnover", "")),
                 str(business_data.get("Hours", "")),
                 str(business_data.get("Open Status", "")),
                 str(business_data.get("Scraped On", "")),
@@ -645,9 +681,9 @@ with st.expander("🔧 Advanced Filters", expanded=False):
                                 help="Filter by minimum company size (employee count)")
     
     st.subheader("Additional Criteria")
-    price_level = st.selectbox("Price Level", 
-                              ["Any", "Budget ($)", "Moderate ($$)", "Expensive ($$$)", "Very Expensive ($$$$)"],
-                              help="Filter by business price level")
+    turnover_level = st.selectbox("Minimum Turnover", 
+                                 ["Any", "£100K+", "£500K+", "£1M+", "£5M+", "£10M+"],
+                                 help="Filter by minimum business turnover/revenue")
 
 # Compile filters into dictionary
 search_filters = {
@@ -661,7 +697,7 @@ search_filters = {
     'require_email': require_email,
     'include_keywords': include_keywords,
     'exclude_keywords': exclude_keywords,
-    'price_level': price_level
+    'turnover_level': turnover_level
 }
 
 # Search button with enhanced functionality
@@ -716,7 +752,7 @@ if st.session_state.search_performed and st.session_state.businesses:
     # Select and reorder columns for display
     display_columns = [
         'Business Name', 'Review Score', 'Total Reviews', 'Employee Count', 
-        'Address', 'Phone', 'Website', 'Email', 'Price Level', 'Open Status', 'Link'
+        'Address', 'Phone', 'Website', 'Email', 'Turnover', 'Open Status', 'Link'
     ]
     
     # Display the table with proper link configuration
@@ -762,8 +798,9 @@ if st.session_state.search_performed and st.session_state.businesses:
                 "Email",
                 width="medium"
             ),
-            "Price Level": st.column_config.TextColumn(
-                "Price",
+            "Turnover": st.column_config.TextColumn(
+                "Turnover",
+                help="Business turnover/revenue",
                 width="small"
             ),
             "Open Status": st.column_config.TextColumn(
@@ -823,11 +860,12 @@ if st.session_state.search_performed and st.session_state.businesses:
     col6, col7 = st.columns([3, 2])
     
     with col6:
-        # Business selector for data enhancement
+        # Business selector for data enhancement - fix the business_names reference
+        business_names_for_enhancement = df['Business Name'].tolist()
         enhancement_business = st.selectbox(
             "Select a business to enhance contact data:",
-            options=range(len(business_names)),
-            format_func=lambda x: f"{business_names[x]} - Missing: {', '.join([item for item in [('Phone' if not df.iloc[x]['Phone'] else ''), ('Email' if not df.iloc[x]['Email'] else ''), ('Website' if not df.iloc[x]['Website'] else '')] if item])}" if x < len(business_names) else "",
+            options=range(len(business_names_for_enhancement)),
+            format_func=lambda x: f"{business_names_for_enhancement[x]} - Missing: {', '.join([item for item in [('Phone' if not df.iloc[x]['Phone'] else ''), ('Email' if not df.iloc[x]['Email'] else ''), ('Website' if not df.iloc[x]['Website'] else ''), ('Turnover' if not df.iloc[x]['Turnover'] else '')] if item])}" if x < len(business_names_for_enhancement) else "",
             key="enhancement_selector"
         )
     
@@ -870,6 +908,9 @@ if st.session_state.search_performed and st.session_state.businesses:
                         changes_made = True
                     if enhanced_data.get('Website') != selected_business_data.get('Website'):
                         st.write(f"🌐 **Website:** {enhanced_data.get('Website', 'Not found')}")
+                        changes_made = True
+                    if enhanced_data.get('Turnover') != selected_business_data.get('Turnover'):
+                        st.write(f"💰 **Turnover:** {enhanced_data.get('Turnover', 'Not found')}")
                         changes_made = True
                     
                     if changes_made:
