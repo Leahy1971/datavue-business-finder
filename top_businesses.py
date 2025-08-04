@@ -104,19 +104,19 @@ def apply_filters(businesses, filters):
     
     for business in businesses:
         # Rating filter
-        if filters['min_rating'] > 0:
+        if filters.get('min_rating', 0) > 0:
             rating = business.get('Review Score', 0)
             if rating and float(rating) < filters['min_rating']:
                 continue
         
         # Minimum reviews filter
-        if filters['min_reviews'] > 0:
+        if filters.get('min_reviews', 0) > 0:
             reviews = business.get('Total Reviews', '0')
             if reviews and int(reviews.replace(',', '')) < filters['min_reviews']:
                 continue
         
         # Employee count filter
-        if filters['min_employees'] and filters['min_employees'] != "Any":
+        if filters.get('min_employees') and filters['min_employees'] != "Any":
             employee_count = business.get('Employee Count', 0)
             if employee_count:
                 try:
@@ -133,29 +133,29 @@ def apply_filters(businesses, filters):
                         continue
         
         # Phone number requirement
-        if filters['require_phone']:
+        if filters.get('require_phone', False):
             if not business.get('Phone', '').strip():
                 continue
         
         # Website requirement
-        if filters['require_website']:
+        if filters.get('require_website', False):
             if not business.get('Website', '').strip():
                 continue
         
         # Email requirement
-        if filters['require_email']:
+        if filters.get('require_email', False):
             if not business.get('Email', '').strip():
                 continue
         
         # Exclude keywords in business name
-        if filters['exclude_keywords']:
+        if filters.get('exclude_keywords', ''):
             name_lower = business.get('Business Name', '').lower()
             exclude_list = [kw.strip().lower() for kw in filters['exclude_keywords'].split(',')]
             if any(kw in name_lower for kw in exclude_list if kw):
                 continue
         
         # Include only keywords in business name
-        if filters['include_keywords']:
+        if filters.get('include_keywords', ''):
             name_lower = business.get('Business Name', '').lower()
             include_list = [kw.strip().lower() for kw in filters['include_keywords'].split(',')]
             if not any(kw in name_lower for kw in include_list if kw):
@@ -172,21 +172,21 @@ def build_search_query(query_term, postcode, filters):
     # Add qualifiers based on filters
     query_modifiers = []
     
-    if filters['open_now']:
+    if filters.get('open_now', False):
         query_modifiers.append("open now")
     
-    if filters['price_level'] and filters['price_level'] != "Any":
+    if filters.get('price_level') and filters['price_level'] != "Any":
         price_map = {
             "Budget ($)": "cheap affordable budget",
-            "Moderate ($)": "moderate pricing",
-            "Expensive ($$)": "premium high-end",
-            "Very Expensive ($$)": "luxury expensive"
+            "Moderate ($$)": "moderate pricing",
+            "Expensive ($$$)": "premium high-end",
+            "Very Expensive ($$$$)": "luxury expensive"
         }
         if filters['price_level'] in price_map:
             query_modifiers.append(price_map[filters['price_level']])
     
     # Add employee size qualifiers to help find larger companies
-    if filters['min_employees'] and filters['min_employees'] != "Any":
+    if filters.get('min_employees') and filters['min_employees'] != "Any":
         size_map = {
             "10+": "company established business",
             "50+": "large company corporation established",
@@ -203,138 +203,142 @@ def build_search_query(query_term, postcode, filters):
 
 def fetch_leads(postcode, query_term, search_filters):
     """Fetch business leads from Google Maps via SerpAPI with enhanced search"""
+    
+    all_businesses = []
+    
     try:
-        # Format location for UK postcodes to improve search accuracy
         location = f"{postcode}, UK"
         search_query = build_search_query(query_term, postcode, search_filters)
-        
         max_results_requested = search_filters.get('max_results', 20)
-        all_businesses = []
+        
         seen_business_names = set()
         seen_place_ids = set()
         
-        # Calculate how many API calls we need (SerpAPI typically returns ~20 results per call)
-        calls_needed = max(1, (max_results_requested + 19) // 20)  # Round up
+        # Create search queries
+        search_queries = [search_query]  # Always start with the base query
         
-        st.info(f"🔍 Fetching {max_results_requested} results using {len(search_variations)} search variation(s)")
-        
-        progress_bar = st.progress(0)
-        
-        for call_num in range(calls_needed):
-            # Update progress
-            progress_bar.progress((call_num) / calls_needed)
+        if max_results_requested > 20:
+            # Add more search variations for higher result counts
+            additional_queries = [
+                f"{query_term} services near {postcode}, UK",
+                f"{query_term} company near {postcode}, UK",
+                f"best {query_term} near {postcode}, UK",
+                f"top {query_term} near {postcode}, UK",
+                f"{query_term} business near {postcode}, UK",
+            ]
             
+            # Add variations until we have enough search queries
+            variations_needed = min(5, (max_results_requested + 15) // 16)
+            search_queries.extend(additional_queries[:variations_needed])
+        
+        st.info(f"🔍 Fetching {max_results_requested} results using {len(search_queries)} search queries")
+        
+        # Show progress for multiple queries
+        if len(search_queries) > 1:
+            progress_bar = st.progress(0)
+        
+        # Execute each search query
+        for query_index, current_query in enumerate(search_queries):
+            
+            if len(search_queries) > 1:
+                progress_bar.progress(query_index / len(search_queries))
+            
+            # API call parameters
             params = {
                 "engine": "google_maps",
-                "q": search_query,
+                "q": current_query,
                 "location": location,
                 "hl": "en",
-                "gl": "uk",  # Country code for UK
+                "gl": "uk",
                 "type": "search",
-                "api_key": API_KEY,
-                "start": call_num * 20  # Offset for pagination
+                "api_key": API_KEY
             }
             
-            # Add additional SerpAPI parameters based on filters
-            if search_filters['open_now']:
-                params["ludocid"] = None  # This helps with open now filtering
+            if search_filters.get('open_now', False):
+                params["ludocid"] = None
             
+            # Make the API call
             search = GoogleSearch(params)
             results = search.get_dict()
             
+            # Check for errors
             if "error" in results:
-                st.error(f"API Error on call {call_num + 1}: {results['error']}")
-                break
+                error_message = f"API Error on query {query_index + 1}: {results['error']}"
+                if query_index == 0:
+                    st.error(error_message)
+                    return []
+                else:
+                    st.warning(error_message + " - Continuing...")
+                    continue
             
+            # Get local results
             local_results = results.get("local_results", [])
-            
             if not local_results:
-                st.info(f"No more results found after {len(all_businesses)} businesses")
-                break
+                if query_index == 0:
+                    st.warning("No businesses found matching your criteria.")
+                continue
             
+            # Process each business result
             for place in local_results:
-                # Check if we already have this business (avoid duplicates)
                 name = place.get("title", "")
                 place_id = place.get("place_id", "")
                 
+                # Skip duplicates
                 if name.lower() in seen_business_names or place_id in seen_place_ids:
                     continue
                 
+                # Track this business
                 if name:
                     seen_business_names.add(name.lower())
                 if place_id:
                     seen_place_ids.add(place_id)
                 
+                # Extract business information
                 reviews = place.get("reviews", "")
                 score = place.get("rating", "")
-                # Use gps_coordinates to construct proper Google Maps URL
                 gps = place.get("gps_coordinates", {})
+                address = place.get("address", "")
+                phone = place.get("phone", "")
+                website = place.get("website", "")
+                price_level = place.get("price", "")
+                hours = place.get("hours", "")
+                is_open = place.get("open_state", "")
                 
-                # Construct Google Maps URL that goes to reviews
+                # Build Google Maps URL
                 if place_id:
-                    # Use place_id for most accurate link to reviews
                     google_maps_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
                 elif gps.get("latitude") and gps.get("longitude"):
-                    # Fallback to coordinates
                     lat = gps["latitude"]
                     lng = gps["longitude"]
                     google_maps_url = f"https://www.google.com/maps/place/{lat},{lng}"
                 else:
-                    # Final fallback to search URL
                     google_maps_url = place.get("link", "")
                 
-                address = place.get("address", "")
-                phone = place.get("phone", "")
-                website = place.get("website", "")
+                # Extract employee count
+                employee_count = place.get("employees", "") or place.get("company_size", "")
                 
-                # Extract price level if available
-                price_level = place.get("price", "")
+                # Extract email
+                email = place.get("email", "") or place.get("contact_info", {}).get("email", "")
                 
-                # Extract hours if available
-                hours = place.get("hours", "")
-                is_open = place.get("open_state", "")
-                
-                # Extract employee count - this might come from various sources
-                employee_count = ""
-                # Try to get from place data (some business listings include this)
-                if place.get("employees"):
-                    employee_count = place.get("employees")
-                elif place.get("company_size"):
-                    employee_count = place.get("company_size")
-                # If not available, we'll try to estimate from other indicators later
-                # For now, we'll leave it empty and the filter will handle missing data
-                
-                # Extract email from multiple possible sources
-                email = ""
-                if place.get("email"):
-                    email = place.get("email")
-                elif place.get("contact_info", {}).get("email"):
-                    email = place.get("contact_info", {}).get("email")
-                
-                # Extract number of reviews - try multiple approaches
+                # Extract review count
                 total_reviews = ""
                 if reviews:
                     if isinstance(reviews, str):
-                        # Extract numbers from reviews string like "123 reviews"
                         import re
                         numbers = re.findall(r'\d+', reviews)
                         if numbers:
                             total_reviews = numbers[0]
-                    elif isinstance(reviews, (int, float)):
+                    else:
                         total_reviews = str(reviews)
                 
-                # Alternative: check if there's a separate reviews_count field
-                if not total_reviews and place.get("reviews_count"):
-                    total_reviews = str(place.get("reviews_count"))
+                if not total_reviews:
+                    total_reviews = str(place.get("reviews_count", "") or place.get("user_ratings_total", "") or "0")
                 
-                # Another alternative: check user_ratings_total
-                if not total_reviews and place.get("user_ratings_total"):
-                    total_reviews = str(place.get("user_ratings_total"))
-                
-                all_businesses.append({
+                # Create business record
+                business = {
                     "Business Name": name,
                     "Review Score": score,
-                    "Total Reviews": total_reviews if total_reviews else "0",
+                    "Total Reviews": total_reviews,
                     "Location": postcode,
                     "Address": address,
                     "Link": google_maps_url,
@@ -348,55 +352,60 @@ def fetch_leads(postcode, query_term, search_filters):
                     "Scraped On": datetime.now().strftime("%Y-%m-%d"),
                     "Notes": "",
                     "Reviews": reviews
-                })
+                }
+                
+                all_businesses.append(business)
                 
                 # Stop if we have enough results
                 if len(all_businesses) >= max_results_requested:
                     break
             
-            # Stop if we have enough results
+            # Stop outer loop if we have enough results
             if len(all_businesses) >= max_results_requested:
                 break
             
-            # Add a small delay between API calls to be respectful
-            if call_num < calls_needed - 1:
+            # Small delay between API calls
+            if query_index < len(search_queries) - 1:
                 time.sleep(0.5)
         
-        progress_bar.progress(1.0)
-        st.success(f"✅ Collected {len(all_businesses)} businesses from {call_num + 1} API calls")
+        # Complete progress bar
+        if len(search_queries) > 1:
+            progress_bar.progress(1.0)
         
-        # Apply additional filters
+        # Show results summary
+        if all_businesses:
+            st.success(f"✅ Collected {len(all_businesses)} unique businesses from {query_index + 1} search queries")
+        else:
+            st.warning("No businesses found with current criteria.")
+        
+        # Apply filters
         filtered_businesses = apply_filters(all_businesses, search_filters)
         
-        # Sort by review quality (rating first, then review count)
-        def sort_key(business):
-            rating = 0
+        # Sort by quality
+        def get_sort_key(business):
             try:
                 rating = float(business.get('Review Score', 0) or 0)
-            except (ValueError, TypeError):
+            except:
                 rating = 0
             
-            review_count = 0
             try:
-                reviews = str(business.get('Total Reviews', '0')).replace(',', '')
-                review_count = int(reviews or 0)
-            except (ValueError, TypeError):
+                review_count = int(str(business.get('Total Reviews', '0')).replace(',', '') or 0)
+            except:
                 review_count = 0
             
-            # Sort by rating first (descending), then by review count (descending)
             return (-rating, -review_count)
         
-        filtered_businesses.sort(key=sort_key)
+        filtered_businesses.sort(key=get_sort_key)
         
-        # Limit results based on user selection (final cut after sorting)
-        if max_results_requested and max_results_requested > 0:
+        # Limit final results
+        if max_results_requested > 0:
             filtered_businesses = filtered_businesses[:max_results_requested]
         
         return filtered_businesses
-    
+        
     except Exception as e:
-        st.error(f"Error fetching leads: {e}")
-        return []
+        st.error(f"Error in fetch_leads: {str(e)}")
+        return all_businesses
 
 def push_to_crm(sheet, business_data):
     """Push business data to CRM sheet"""
@@ -524,7 +533,7 @@ with st.expander("🔧 Advanced Filters", expanded=False):
     
     st.subheader("Additional Criteria")
     price_level = st.selectbox("Price Level", 
-                              ["Any", "Budget ($)", "Moderate ($)", "Expensive ($$)", "Very Expensive ($$)"],
+                              ["Any", "Budget ($)", "Moderate ($$)", "Expensive ($$$)", "Very Expensive ($$$$)"],
                               help="Filter by business price level")
 
 # Compile filters into dictionary
