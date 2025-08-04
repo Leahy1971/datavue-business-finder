@@ -664,11 +664,67 @@ def get_companies_house_financials(company_number):
     except Exception as e:
         return {}, f"Error getting financials: {str(e)}"
 
+def search_companies_house_web(business_name, postcode=None):
+    """Fallback: Search Companies House via web scraping when API fails"""
+    
+    try:
+        import urllib.parse
+        
+        # Clean business name for search
+        search_name = re.sub(r'\b(ltd|limited|plc|llp|&|and)\b', '', business_name.lower()).strip()
+        search_name = re.sub(r'[^\w\s]', ' ', search_name).strip()
+        
+        # Companies House website search
+        base_url = "https://find-and-update.company-information.service.gov.uk/search/companies"
+        params = {'q': search_name}
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(base_url, params=params, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            return [], f"Web search failed: Status {response.status_code}"
+        
+        # Simple parsing to extract company information
+        import re
+        html = response.text
+        
+        # Look for company entries in the HTML
+        # This is a basic regex - Companies House might change their HTML
+        company_pattern = r'<h3[^>]*>\s*<a[^>]*href="[^"]*"[^>]*>([^<]+)</a>\s*</h3>'
+        companies = re.findall(company_pattern, html)
+        
+        matches = []
+        for i, company_name in enumerate(companies[:5]):  # Limit to 5 results
+            # Clean up the company name
+            company_name = company_name.strip()
+            
+            # Calculate similarity score
+            name_similarity = similarity_score(business_name, company_name)
+            
+            if name_similarity > 0.4:  # Only include reasonable matches
+                matches.append({
+                    'company_name': company_name,
+                    'company_number': f"Web-{i+1}",  # Placeholder
+                    'address': "Address available on Companies House website",
+                    'status': 'active',
+                    'similarity_score': name_similarity
+                })
+        
+        # Sort by similarity score
+        matches.sort(key=lambda x: x['similarity_score'], reverse=True)
+        
+        return matches[:3], None
+        
+    except Exception as e:
+        return [], f"Web search error: {str(e)}"
+
 def enhance_with_companies_house(business_data):
-    """Enhance business data with Companies House information"""
+    """Enhanced version that tries API first, then web scraping"""
     
     enhanced_data = business_data.copy()
-    companies_house_info = {}
     
     try:
         business_name = business_data.get('Business Name', '')
@@ -677,44 +733,65 @@ def enhance_with_companies_house(business_data):
         if not business_name:
             return enhanced_data, "No business name provided"
         
-        # Search for matching companies
-        matches, error = search_companies_house(business_name, postcode)
+        # Try API first
+        if COMPANIES_HOUSE_API_KEY:
+            matches, error = search_companies_house(business_name, postcode)
+            
+            if error and "401" not in str(error):  # If not auth error, return API error
+                return enhanced_data, f"Companies House API failed: {error}"
+            elif matches:  # API worked
+                best_match = matches[0]
+                company_number = best_match['company_number']
+                
+                # Get financial data
+                financial_data, fin_error = get_companies_house_financials(company_number)
+                
+                if fin_error:
+                    companies_house_info = {
+                        'official_name': best_match['company_name'],
+                        'company_number': company_number,
+                        'match_score': f"{best_match['similarity_score']:.2f}",
+                        'source': 'Companies House API',
+                        'error': fin_error
+                    }
+                else:
+                    companies_house_info = financial_data
+                    companies_house_info['match_score'] = f"{best_match['similarity_score']:.2f}"
+                    companies_house_info['source'] = 'Companies House API'
+                    
+                    # Update enhanced data
+                    enhanced_data['Official Name'] = financial_data.get('official_name', '')
+                    enhanced_data['Company Number'] = company_number
+                    enhanced_data['Company Type'] = financial_data.get('company_type', '')
+                    enhanced_data['Incorporation Date'] = financial_data.get('incorporation_date', '')
+                    enhanced_data['SIC Codes'] = ', '.join(financial_data.get('sic_codes', [])[:3])
+                    enhanced_data['Last Accounts Date'] = financial_data.get('last_accounts', '')
+                
+                return enhanced_data, companies_house_info
+        
+        # Fallback to web scraping
+        matches, error = search_companies_house_web(business_name, postcode)
         
         if error:
-            return enhanced_data, f"Companies House search failed: {error}"
+            return enhanced_data, f"Both API and web search failed: {error}"
         
         if not matches:
-            return enhanced_data, "No matching companies found in Companies House"
+            return enhanced_data, "No matching companies found via web search"
         
-        # Use the best match
+        # Use the best web match
         best_match = matches[0]
-        company_number = best_match['company_number']
         
-        # Get financial data
-        financial_data, fin_error = get_companies_house_financials(company_number)
+        companies_house_info = {
+            'official_name': best_match['company_name'],
+            'company_number': 'Available on Companies House website',
+            'match_score': f"{best_match['similarity_score']:.2f}",
+            'source': 'Companies House Website',
+            'note': 'Full company details available at find-and-update.company-information.service.gov.uk'
+        }
         
-        if fin_error:
-            companies_house_info = {
-                'official_name': best_match['company_name'],
-                'company_number': company_number,
-                'match_score': f"{best_match['similarity_score']:.2f}",
-                'error': fin_error
-            }
-        else:
-            companies_house_info = financial_data
-            companies_house_info['match_score'] = f"{best_match['similarity_score']:.2f}"
-            
-            # Update enhanced data with official information
-            enhanced_data['Official Name'] = financial_data.get('official_name', '')
-            enhanced_data['Company Number'] = company_number
-            enhanced_data['Company Type'] = financial_data.get('company_type', '')
-            enhanced_data['Incorporation Date'] = financial_data.get('incorporation_date', '')
-            enhanced_data['SIC Codes'] = ', '.join(financial_data.get('sic_codes', [])[:3])  # First 3 SIC codes
-            enhanced_data['Last Accounts Date'] = financial_data.get('last_accounts', '')
-            
-            # Override turnover if we have Companies House data
-            if financial_data.get('turnover') and financial_data['turnover'] != 'Not available':
-                enhanced_data['Turnover'] = financial_data['turnover']
+        # Update enhanced data with what we found
+        enhanced_data['Official Name'] = best_match['company_name']
+        enhanced_data['Company Number'] = 'See Companies House website'
         
         return enhanced_data, companies_house_info
         
