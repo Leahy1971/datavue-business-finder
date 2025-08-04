@@ -208,119 +208,165 @@ def fetch_leads(postcode, query_term, search_filters):
         location = f"{postcode}, UK"
         search_query = build_search_query(query_term, postcode, search_filters)
         
-        params = {
-            "engine": "google_maps",
-            "q": search_query,
-            "location": location,
-            "hl": "en",
-            "gl": "uk",  # Country code for UK
-            "type": "search",
-            "api_key": API_KEY,
-            "num": min(search_filters.get('max_results', 20), 100)  # API limit is typically 100
-        }
+        max_results_requested = search_filters.get('max_results', 20)
+        all_businesses = []
+        seen_business_names = set()
+        seen_place_ids = set()
         
-        # Add additional SerpAPI parameters based on filters
-        if search_filters['open_now']:
-            params["ludocid"] = None  # This helps with open now filtering
+        # Calculate how many API calls we need (SerpAPI typically returns ~20 results per call)
+        calls_needed = max(1, (max_results_requested + 19) // 20)  # Round up
         
-        search = GoogleSearch(params)
-        results = search.get_dict()
+        st.info(f"🔍 Fetching {max_results_requested} results... (May require {calls_needed} API calls)")
         
-        if "error" in results:
-            st.error(f"API Error: {results['error']}")
-            return []
+        progress_bar = st.progress(0)
         
-        businesses = []
-        for place in results.get("local_results", []):
-            name = place.get("title", "")
-            reviews = place.get("reviews", "")
-            score = place.get("rating", "")
-            # Use gps_coordinates to construct proper Google Maps URL
-            gps = place.get("gps_coordinates", {})
-            place_id = place.get("place_id", "")
+        for call_num in range(calls_needed):
+            # Update progress
+            progress_bar.progress((call_num) / calls_needed)
             
-            # Construct Google Maps URL that goes to reviews
-            if place_id:
-                # Use place_id for most accurate link to reviews
-                google_maps_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
-            elif gps.get("latitude") and gps.get("longitude"):
-                # Fallback to coordinates
-                lat = gps["latitude"]
-                lng = gps["longitude"]
-                google_maps_url = f"https://www.google.com/maps/place/{lat},{lng}"
-            else:
-                # Final fallback to search URL
-                google_maps_url = place.get("link", "")
+            params = {
+                "engine": "google_maps",
+                "q": search_query,
+                "location": location,
+                "hl": "en",
+                "gl": "uk",  # Country code for UK
+                "type": "search",
+                "api_key": API_KEY,
+                "start": call_num * 20  # Offset for pagination
+            }
             
-            address = place.get("address", "")
-            phone = place.get("phone", "")
-            website = place.get("website", "")
+            # Add additional SerpAPI parameters based on filters
+            if search_filters['open_now']:
+                params["ludocid"] = None  # This helps with open now filtering
             
-            # Extract price level if available
-            price_level = place.get("price", "")
+            search = GoogleSearch(params)
+            results = search.get_dict()
             
-            # Extract hours if available
-            hours = place.get("hours", "")
-            is_open = place.get("open_state", "")
+            if "error" in results:
+                st.error(f"API Error on call {call_num + 1}: {results['error']}")
+                break
             
-            # Extract employee count - this might come from various sources
-            employee_count = ""
-            # Try to get from place data (some business listings include this)
-            if place.get("employees"):
-                employee_count = place.get("employees")
-            elif place.get("company_size"):
-                employee_count = place.get("company_size")
-            # If not available, we'll try to estimate from other indicators later
-            # For now, we'll leave it empty and the filter will handle missing data
+            local_results = results.get("local_results", [])
             
-            # Extract email from multiple possible sources
-            email = ""
-            if place.get("email"):
-                email = place.get("email")
-            elif place.get("contact_info", {}).get("email"):
-                email = place.get("contact_info", {}).get("email")
+            if not local_results:
+                st.info(f"No more results found after {len(all_businesses)} businesses")
+                break
             
-            # Extract number of reviews - try multiple approaches
-            total_reviews = ""
-            if reviews:
-                if isinstance(reviews, str):
-                    # Extract numbers from reviews string like "123 reviews"
-                    import re
-                    numbers = re.findall(r'\d+', reviews)
-                    if numbers:
-                        total_reviews = numbers[0]
-                elif isinstance(reviews, (int, float)):
-                    total_reviews = str(reviews)
+            for place in local_results:
+                # Check if we already have this business (avoid duplicates)
+                name = place.get("title", "")
+                place_id = place.get("place_id", "")
+                
+                if name.lower() in seen_business_names or place_id in seen_place_ids:
+                    continue
+                
+                if name:
+                    seen_business_names.add(name.lower())
+                if place_id:
+                    seen_place_ids.add(place_id)
+                
+                reviews = place.get("reviews", "")
+                score = place.get("rating", "")
+                # Use gps_coordinates to construct proper Google Maps URL
+                gps = place.get("gps_coordinates", {})
+                
+                # Construct Google Maps URL that goes to reviews
+                if place_id:
+                    # Use place_id for most accurate link to reviews
+                    google_maps_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
+                elif gps.get("latitude") and gps.get("longitude"):
+                    # Fallback to coordinates
+                    lat = gps["latitude"]
+                    lng = gps["longitude"]
+                    google_maps_url = f"https://www.google.com/maps/place/{lat},{lng}"
+                else:
+                    # Final fallback to search URL
+                    google_maps_url = place.get("link", "")
+                
+                address = place.get("address", "")
+                phone = place.get("phone", "")
+                website = place.get("website", "")
+                
+                # Extract price level if available
+                price_level = place.get("price", "")
+                
+                # Extract hours if available
+                hours = place.get("hours", "")
+                is_open = place.get("open_state", "")
+                
+                # Extract employee count - this might come from various sources
+                employee_count = ""
+                # Try to get from place data (some business listings include this)
+                if place.get("employees"):
+                    employee_count = place.get("employees")
+                elif place.get("company_size"):
+                    employee_count = place.get("company_size")
+                # If not available, we'll try to estimate from other indicators later
+                # For now, we'll leave it empty and the filter will handle missing data
+                
+                # Extract email from multiple possible sources
+                email = ""
+                if place.get("email"):
+                    email = place.get("email")
+                elif place.get("contact_info", {}).get("email"):
+                    email = place.get("contact_info", {}).get("email")
+                
+                # Extract number of reviews - try multiple approaches
+                total_reviews = ""
+                if reviews:
+                    if isinstance(reviews, str):
+                        # Extract numbers from reviews string like "123 reviews"
+                        import re
+                        numbers = re.findall(r'\d+', reviews)
+                        if numbers:
+                            total_reviews = numbers[0]
+                    elif isinstance(reviews, (int, float)):
+                        total_reviews = str(reviews)
+                
+                # Alternative: check if there's a separate reviews_count field
+                if not total_reviews and place.get("reviews_count"):
+                    total_reviews = str(place.get("reviews_count"))
+                
+                # Another alternative: check user_ratings_total
+                if not total_reviews and place.get("user_ratings_total"):
+                    total_reviews = str(place.get("user_ratings_total"))
+                
+                all_businesses.append({
+                    "Business Name": name,
+                    "Review Score": score,
+                    "Total Reviews": total_reviews if total_reviews else "0",
+                    "Location": postcode,
+                    "Address": address,
+                    "Link": google_maps_url,
+                    "Phone": phone,
+                    "Website": website,
+                    "Email": email,
+                    "Employee Count": employee_count,
+                    "Price Level": price_level,
+                    "Hours": hours,
+                    "Open Status": is_open,
+                    "Scraped On": datetime.now().strftime("%Y-%m-%d"),
+                    "Notes": "",
+                    "Reviews": reviews
+                })
+                
+                # Stop if we have enough results
+                if len(all_businesses) >= max_results_requested:
+                    break
             
-            # Alternative: check if there's a separate reviews_count field
-            if not total_reviews and place.get("reviews_count"):
-                total_reviews = str(place.get("reviews_count"))
+            # Stop if we have enough results
+            if len(all_businesses) >= max_results_requested:
+                break
             
-            # Another alternative: check user_ratings_total
-            if not total_reviews and place.get("user_ratings_total"):
-                total_reviews = str(place.get("user_ratings_total"))
-            
-            businesses.append({
-                "Business Name": name,
-                "Review Score": score,
-                "Total Reviews": total_reviews if total_reviews else "0",
-                "Location": postcode,
-                "Address": address,
-                "Link": google_maps_url,
-                "Phone": phone,
-                "Website": website,
-                "Email": email,
-                "Employee Count": employee_count,
-                "Price Level": price_level,
-                "Hours": hours,
-                "Open Status": is_open,
-                "Scraped On": datetime.now().strftime("%Y-%m-%d"),
-                "Notes": "",
-                "Reviews": reviews
-            })
+            # Add a small delay between API calls to be respectful
+            if call_num < calls_needed - 1:
+                time.sleep(0.5)
+        
+        progress_bar.progress(1.0)
+        st.success(f"✅ Collected {len(all_businesses)} businesses from {call_num + 1} API calls")
         
         # Apply additional filters
-        filtered_businesses = apply_filters(businesses, search_filters)
+        filtered_businesses = apply_filters(all_businesses, search_filters)
         
         # Sort by review quality (rating first, then review count)
         def sort_key(business):
@@ -342,10 +388,9 @@ def fetch_leads(postcode, query_term, search_filters):
         
         filtered_businesses.sort(key=sort_key)
         
-        # Limit results based on user selection
-        max_results = search_filters.get('max_results', 20)
-        if max_results and max_results > 0:
-            filtered_businesses = filtered_businesses[:max_results]
+        # Limit results based on user selection (final cut after sorting)
+        if max_results_requested and max_results_requested > 0:
+            filtered_businesses = filtered_businesses[:max_results_requested]
         
         return filtered_businesses
     
