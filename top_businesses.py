@@ -439,8 +439,16 @@ def search_companies_house(business_name, postcode=None):
         
         # Companies House search API
         url = f"{COMPANIES_HOUSE_BASE_URL}/search/companies"
+        
+        # Companies House requires Basic Auth with API key as username and empty password
+        import base64
+        auth_string = f"{COMPANIES_HOUSE_API_KEY}:"
+        auth_bytes = auth_string.encode('ascii')
+        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
+        
         headers = {
-            'Authorization': COMPANIES_HOUSE_API_KEY
+            'Authorization': f'Basic {auth_b64}',
+            'Accept': 'application/json'
         }
         
         params = {
@@ -450,8 +458,12 @@ def search_companies_house(business_name, postcode=None):
         
         response = requests.get(url, headers=headers, params=params)
         
-        if response.status_code != 200:
-            return [], f"Companies House API error: {response.status_code}"
+        if response.status_code == 401:
+            return [], "Invalid Companies House API key - please check your API key is correct"
+        elif response.status_code == 429:
+            return [], "Rate limit exceeded - please wait a moment and try again"
+        elif response.status_code != 200:
+            return [], f"Companies House API error: {response.status_code} - {response.text}"
         
         data = response.json()
         companies = data.get('items', [])
@@ -499,12 +511,19 @@ def get_companies_house_financials(company_number):
         return {}, "Companies House API key not configured"
     
     try:
-        # Get company filing history
-        url = f"{COMPANIES_HOUSE_BASE_URL}/company/{company_number}/filing-history"
+        # Set up Basic Auth
+        import base64
+        auth_string = f"{COMPANIES_HOUSE_API_KEY}:"
+        auth_bytes = auth_string.encode('ascii')
+        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
+        
         headers = {
-            'Authorization': COMPANIES_HOUSE_API_KEY
+            'Authorization': f'Basic {auth_b64}',
+            'Accept': 'application/json'
         }
         
+        # Get company filing history
+        url = f"{COMPANIES_HOUSE_BASE_URL}/company/{company_number}/filing-history"
         params = {
             'category': 'accounts',
             'items_per_page': 5
@@ -512,7 +531,9 @@ def get_companies_house_financials(company_number):
         
         response = requests.get(url, headers=headers, params=params)
         
-        if response.status_code != 200:
+        if response.status_code == 401:
+            return {}, "Invalid Companies House API key for financials lookup"
+        elif response.status_code != 200:
             return {}, f"Filing history API error: {response.status_code}"
         
         filings_data = response.json()
