@@ -1,4 +1,4 @@
-import streamlit as 
+import streamlit as st
 import pandas as pd
 import requests
 from serpapi import GoogleSearch
@@ -215,7 +215,8 @@ def fetch_leads(postcode, query_term, search_filters):
             "hl": "en",
             "gl": "uk",  # Country code for UK
             "type": "search",
-            "api_key": API_KEY
+            "api_key": API_KEY,
+            "num": min(search_filters.get('max_results', 20), 100)  # API limit is typically 100
         }
         
         # Add additional SerpAPI parameters based on filters
@@ -321,6 +322,31 @@ def fetch_leads(postcode, query_term, search_filters):
         # Apply additional filters
         filtered_businesses = apply_filters(businesses, search_filters)
         
+        # Sort by review quality (rating first, then review count)
+        def sort_key(business):
+            rating = 0
+            try:
+                rating = float(business.get('Review Score', 0) or 0)
+            except (ValueError, TypeError):
+                rating = 0
+            
+            review_count = 0
+            try:
+                reviews = str(business.get('Total Reviews', '0')).replace(',', '')
+                review_count = int(reviews or 0)
+            except (ValueError, TypeError):
+                review_count = 0
+            
+            # Sort by rating first (descending), then by review count (descending)
+            return (-rating, -review_count)
+        
+        filtered_businesses.sort(key=sort_key)
+        
+        # Limit results based on user selection
+        max_results = search_filters.get('max_results', 20)
+        if max_results and max_results > 0:
+            filtered_businesses = filtered_businesses[:max_results]
+        
         return filtered_businesses
     
     except Exception as e:
@@ -415,6 +441,14 @@ col3, col4 = st.columns(2)
 radius = col3.slider("Search Radius (miles)", 1, 20, 5)
 open_now = col4.checkbox("Open Now Only", help="Only show businesses currently open")
 
+# Results quantity selector
+max_results = st.selectbox(
+    "Number of Results (Top Reviewed)",
+    options=[5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+    index=2,  # Default to 20
+    help="Select how many top-reviewed businesses to return (sorted by rating and review count)"
+)
+
 # Advanced Filters Section
 with st.expander("🔧 Advanced Filters", expanded=False):
     st.subheader("Quality Filters")
@@ -451,6 +485,7 @@ with st.expander("🔧 Advanced Filters", expanded=False):
 # Compile filters into dictionary
 search_filters = {
     'open_now': open_now,
+    'max_results': max_results,
     'min_rating': min_rating,
     'min_reviews': min_reviews,
     'min_employees': min_employees,
@@ -480,17 +515,17 @@ if st.button("🔍 Search with Filters", type="primary"):
 # Display results from session state
 if st.session_state.search_performed and st.session_state.businesses:
     df = pd.DataFrame(st.session_state.businesses)
-    # Sort by review score and total reviews
+    # Data is already sorted by the fetch_leads function, so we don't need to sort again
+    # Convert to numeric for display purposes
     df["Review Score"] = pd.to_numeric(df["Review Score"], errors='coerce')
     df["Total Reviews"] = pd.to_numeric(df["Total Reviews"], errors='coerce')
-    df = df.sort_values(by=["Review Score", "Total Reviews"], ascending=False, na_position='last')
     
     st.write("---")
     
     # Results summary
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Total Results", len(df))
+        st.metric("Results Returned", len(df))
     with col2:
         avg_rating = df["Review Score"].mean() if not df["Review Score"].isna().all() else 0
         st.metric("Average Rating", f"{avg_rating:.1f}")
@@ -500,6 +535,11 @@ if st.session_state.search_performed and st.session_state.businesses:
     with col4:
         businesses_with_website = len(df[df["Website"].str.strip() != ""])
         st.metric("With Website", businesses_with_website)
+    
+    # Quality indicator
+    top_rated = len(df[df["Review Score"] >= 4.0]) if not df["Review Score"].isna().all() else 0
+    if top_rated > 0:
+        st.info(f"⭐ {top_rated} businesses with 4+ star ratings in your results")
     
     st.subheader("📊 Search Results")
     
