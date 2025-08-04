@@ -669,11 +669,13 @@ if st.session_state.search_performed and st.session_state.businesses:
     st.write("---")
     st.subheader("📝 CRM Actions")
     
-    # Add CRM push buttons below the table
-    col1, col2, col3 = st.columns(3)
+    # Redesigned CRM Actions with better visual layout
+    
+    # Top row - Push all and download actions
+    col1, col2, col3 = st.columns([2, 1, 2])
     
     with col1:
-        if st.button("🔄 Push All to CRM"):
+        if st.button("🔄 Push All to CRM", use_container_width=True, type="primary"):
             if sheet:
                 success_count = 0
                 for _, row in df.iterrows():
@@ -688,17 +690,38 @@ if st.session_state.search_performed and st.session_state.businesses:
                 st.error("❌ CRM unavailable - Google Sheets not connected")
     
     with col2:
+        st.write("")  # Empty middle column for spacing
+    
+    with col3:
+        # Download CSV
+        csv_data = df.to_csv(index=False)
+        st.download_button(
+            label="⬇️ Download Results as CSV",
+            data=csv_data,
+            file_name=f"filtered_business_results_{postcode}_{query}_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    
+    st.write("")  # Add some vertical spacing
+    
+    # Bottom row - Individual business selection
+    st.write("**Individual Business Actions:**")
+    col4, col5 = st.columns([3, 2])
+    
+    with col4:
         # Individual business selector for CRM push
         business_names = df['Business Name'].tolist()
         selected_business = st.selectbox(
-            "Select business to push to CRM:",
+            "Select a business to push to CRM:",
             options=range(len(business_names)),
             format_func=lambda x: business_names[x] if x < len(business_names) else "",
             key="business_selector"
         )
     
-    with col3:
-        if st.button("📤 Push Selected to CRM"):
+    with col5:
+        st.write("")  # Add some vertical space to align with selectbox
+        if st.button("📤 Push Selected to CRM", use_container_width=True):
             if sheet and selected_business is not None:
                 selected_row = df.iloc[selected_business]
                 success = push_to_crm(sheet, selected_row)
@@ -706,12 +729,3 @@ if st.session_state.search_performed and st.session_state.businesses:
                     st.rerun()
             else:
                 st.error("❌ CRM unavailable - Google Sheets not connected")
-    
-    # Download CSV
-    csv_data = df.to_csv(index=False)
-    st.download_button(
-        label="⬇️ Download Filtered Results as CSV",
-        data=csv_data,
-        file_name=f"filtered_business_results_{postcode}_{query}_{datetime.now().strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
