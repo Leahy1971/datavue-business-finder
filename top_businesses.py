@@ -407,7 +407,120 @@ def fetch_leads(postcode, query_term, search_filters):
         st.error(f"Error in fetch_leads: {str(e)}")
         return all_businesses
 
-def push_to_crm(sheet, business_data):
+def enhance_business_data(business_data, api_key):
+    """Search the web for missing business contact information"""
+    
+    enhanced_data = business_data.copy()
+    search_results = []
+    
+    try:
+        business_name = business_data.get('Business Name', '')
+        location = business_data.get('Location', '')
+        
+        if not business_name:
+            return enhanced_data, ["No business name provided for enhancement"]
+        
+        # Create search queries to find missing data
+        search_queries = []
+        
+        # Check what data is missing and create targeted searches
+        missing_phone = not business_data.get('Phone', '').strip()
+        missing_email = not business_data.get('Email', '').strip()
+        missing_website = not business_data.get('Website', '').strip()
+        
+        if missing_phone or missing_email or missing_website:
+            # Primary search - business name + location + contact
+            search_queries.append(f'"{business_name}" {location} contact phone email')
+            
+            # Secondary search - business name + location + website
+            if missing_website:
+                search_queries.append(f'"{business_name}" {location} website')
+            
+            # Tertiary search - business name + phone number
+            if missing_phone:
+                search_queries.append(f'"{business_name}" {location} phone number mobile')
+        
+        if not search_queries:
+            return enhanced_data, ["All contact information already available"]
+        
+        # Perform web searches
+        for query in search_queries[:2]:  # Limit to 2 searches to avoid API limits
+            params = {
+                "engine": "google",
+                "q": query,
+                "api_key": api_key,
+                "num": 5  # Limit results
+            }
+            
+            search = GoogleSearch(params)
+            results = search.get_dict()
+            
+            if "error" in results:
+                search_results.append(f"Search error: {results['error']}")
+                continue
+            
+            # Extract data from organic results
+            organic_results = results.get("organic_results", [])
+            
+            for result in organic_results:
+                snippet = result.get("snippet", "").lower()
+                title = result.get("title", "").lower()
+                link = result.get("link", "")
+                
+                # Look for phone numbers in snippets
+                if missing_phone:
+                    import re
+                    # UK phone number patterns
+                    phone_patterns = [
+                        r'\b(?:0|\+44)\d{2,4}\s?\d{3,4}\s?\d{3,4}\b',  # UK landline/mobile
+                        r'\b(?:07\d{9}|7\d{9})\b',  # UK mobile
+                        r'\b0\d{3,4}\s?\d{3,4}\s?\d{3,4}\b'  # UK landline
+                    ]
+                    
+                    for pattern in phone_patterns:
+                        phone_matches = re.findall(pattern, snippet + " " + title)
+                        if phone_matches:
+                            # Clean up the phone number
+                            phone = phone_matches[0].strip()
+                            if phone and len(phone) >= 10:
+                                enhanced_data['Phone'] = phone
+                                search_results.append(f"Found phone: {phone}")
+                                missing_phone = False
+                                break
+                
+                # Look for email addresses
+                if missing_email:
+                    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+                    email_matches = re.findall(email_pattern, snippet + " " + title)
+                    if email_matches:
+                        # Filter out generic emails
+                        valid_emails = [email for email in email_matches 
+                                      if not any(generic in email.lower() 
+                                               for generic in ['noreply', 'support', 'info@google', 'contact@example'])]
+                        if valid_emails:
+                            enhanced_data['Email'] = valid_emails[0]
+                            search_results.append(f"Found email: {valid_emails[0]}")
+                            missing_email = False
+                
+                # Look for website
+                if missing_website and link:
+                    # Check if this link looks like a business website (not Google, Facebook, etc.)
+                    exclude_domains = ['google.', 'facebook.', 'linkedin.', 'twitter.', 'instagram.', 'youtube.']
+                    if not any(domain in link.lower() for domain in exclude_domains):
+                        # Simple check if this might be the business website
+                        business_words = business_name.lower().split()
+                        if any(word in link.lower() for word in business_words if len(word) > 3):
+                            enhanced_data['Website'] = link
+                            search_results.append(f"Found potential website: {link}")
+                            missing_website = False
+        
+        if not search_results:
+            search_results.append("No additional contact information found")
+        
+        return enhanced_data, search_results
+        
+    except Exception as e:
+        return enhanced_data, [f"Error during enhancement: {str(e)}"]
     """Push business data to CRM sheet"""
     if not sheet:
         st.error("❌ Google Sheets connection not available")
@@ -702,6 +815,66 @@ if st.session_state.search_performed and st.session_state.businesses:
             mime="text/csv",
             use_container_width=True
         )
+    
+    st.write("")  # Add some vertical spacing
+    
+    # Data Enhancement Section
+    st.write("**Data Enhancement:**")
+    col6, col7 = st.columns([3, 2])
+    
+    with col6:
+        # Business selector for data enhancement
+        enhancement_business = st.selectbox(
+            "Select a business to enhance contact data:",
+            options=range(len(business_names)),
+            format_func=lambda x: f"{business_names[x]} - Missing: {', '.join([item for item in [('Phone' if not df.iloc[x]['Phone'] else ''), ('Email' if not df.iloc[x]['Email'] else ''), ('Website' if not df.iloc[x]['Website'] else '')] if item])}" if x < len(business_names) else "",
+            key="enhancement_selector"
+        )
+    
+    with col7:
+        st.write("")  # Add some vertical space to align with selectbox
+        if st.button("🔍 Enhance Contact Data", use_container_width=True):
+            if enhancement_business is not None:
+                selected_business_data = df.iloc[enhancement_business].to_dict()
+                
+                with st.spinner("🔍 Searching web for missing contact information..."):
+                    enhanced_data, search_log = enhance_business_data(selected_business_data, API_KEY)
+                
+                # Show results
+                st.write("**Enhancement Results:**")
+                for log_entry in search_log:
+                    if "Found" in log_entry:
+                        st.success(f"✅ {log_entry}")
+                    elif "Error" in log_entry:
+                        st.error(f"❌ {log_entry}")
+                    else:
+                        st.info(f"ℹ️ {log_entry}")
+                
+                # Update the dataframe with enhanced data
+                if enhanced_data != selected_business_data:
+                    # Update the session state with enhanced data
+                    for col, value in enhanced_data.items():
+                        if col in df.columns:
+                            st.session_state.businesses[enhancement_business][col] = value
+                    
+                    st.success("🎉 Business data updated! Refresh to see changes in the table.")
+                    
+                    # Show what was enhanced
+                    st.write("**Updated Information:**")
+                    changes_made = False
+                    if enhanced_data.get('Phone') != selected_business_data.get('Phone'):
+                        st.write(f"📞 **Phone:** {enhanced_data.get('Phone', 'Not found')}")
+                        changes_made = True
+                    if enhanced_data.get('Email') != selected_business_data.get('Email'):
+                        st.write(f"📧 **Email:** {enhanced_data.get('Email', 'Not found')}")
+                        changes_made = True
+                    if enhanced_data.get('Website') != selected_business_data.get('Website'):
+                        st.write(f"🌐 **Website:** {enhanced_data.get('Website', 'Not found')}")
+                        changes_made = True
+                    
+                    if changes_made:
+                        if st.button("🔄 Refresh Results", key="refresh_after_enhancement"):
+                            st.rerun()
     
     st.write("")  # Add some vertical spacing
     
