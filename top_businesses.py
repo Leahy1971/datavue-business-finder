@@ -426,7 +426,29 @@ def similarity_score(a, b):
     """Calculate similarity between two strings"""
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
-def search_companies_house(business_name, postcode=None):
+def test_companies_house_api():
+    """Test Companies House API connection"""
+    
+    if not COMPANIES_HOUSE_API_KEY:
+        return "No API key configured"
+    
+    try:
+        # Test with a simple, known company search
+        url = f"{COMPANIES_HOUSE_BASE_URL}/search/companies"
+        
+        # Use requests.auth.HTTPBasicAuth for proper Basic Auth
+        import requests.auth
+        
+        response = requests.get(
+            url, 
+            auth=requests.auth.HTTPBasicAuth(COMPANIES_HOUSE_API_KEY, ''),
+            params={'q': 'tesco', 'items_per_page': 1}
+        )
+        
+        return f"Status: {response.status_code}, Response: {response.text[:200]}"
+        
+    except Exception as e:
+        return f"Error: {str(e)}"
     """Search Companies House for matching companies"""
     
     if not COMPANIES_HOUSE_API_KEY:
@@ -1227,6 +1249,13 @@ if st.session_state.search_performed and st.session_state.businesses:
     
     # Companies House Enhancement Section
     st.write("**Companies House Lookup:**")
+    
+    # Add API test button
+    if st.button("🧪 Test Companies House API", help="Test if your API key is working"):
+        with st.spinner("Testing API connection..."):
+            test_result = test_companies_house_api()
+            st.write(f"**API Test Result:** {test_result}")
+    
     col8, col9 = st.columns([3, 2])
     
     with col8:
