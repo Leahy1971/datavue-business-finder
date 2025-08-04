@@ -216,7 +216,7 @@ def fetch_leads(postcode, query_term, search_filters):
         # Calculate how many API calls we need (SerpAPI typically returns ~20 results per call)
         calls_needed = max(1, (max_results_requested + 19) // 20)  # Round up
         
-        st.info(f"🔍 Fetching {max_results_requested} results... (May require {calls_needed} API calls)")
+        st.info(f"🔍 Fetching {max_results_requested} results using {len(search_variations)} search variation(s)")
         
         progress_bar = st.progress(0)
         
