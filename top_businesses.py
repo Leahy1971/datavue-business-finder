@@ -648,7 +648,7 @@ def enhance_business_data(business_data, api_key):
         return False
 
 # ====== STREAMLIT UI ======
-st.title("🔍 Datavue (Top Reviewed) Local Business Finder")
+st.title("Datavue (Top Reviewed) Biz Finder")
 st.caption("Search top-rated local businesses with advanced filtering and sync straight into your CRM Sheet")
 
 # Initialize Google Sheets connection
