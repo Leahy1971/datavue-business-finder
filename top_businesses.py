@@ -480,7 +480,7 @@ def search_companies_house_web(business_name, postcode=None):
         params = {'q': search_name}
         
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
         
         response = requests.get(base_url, params=params, headers=headers, timeout=10)
@@ -490,26 +490,75 @@ def search_companies_house_web(business_name, postcode=None):
         
         html = response.text
         
-        # Look for company entries in the HTML
-        company_pattern = r'<h3[^>]*>\s*<a[^>]*href="[^"]*"[^>]*>([^<]+)</a>\s*</h3>'
-        companies = re.findall(company_pattern, html)
+        # Try multiple patterns to find company entries
+        patterns = [
+            # Pattern 1: Standard h3 with link
+            r'<h3[^>]*>\s*<a[^>]*href="[^"]*"[^>]*>([^<]+)</a>\s*</h3>',
+            # Pattern 2: Alternative h3 structure
+            r'<h3[^>]*class="[^"]*"[^>]*>\s*<a[^>]*>([^<]+)</a>',
+            # Pattern 3: More flexible pattern
+            r'<a[^>]*href="/company/[^"]*"[^>]*>([^<]+)</a>',
+            # Pattern 4: Even more flexible
+            r'href="/company/[^"]*"[^>]*>([^<]+)</a>',
+        ]
         
+        companies = []
+        for pattern in patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE | re.DOTALL)
+            companies.extend(matches)
+            if companies:  # If we found matches with this pattern, stop trying
+                break
+        
+        # If no regex matches, try a simpler approach
+        if not companies:
+            # Look for any text that might be company names
+            # This is a fallback - look for common company endings
+            company_endings = ['LIMITED', 'LTD', 'PLC', 'LLP']
+            lines = html.split('\n')
+            
+            for line in lines:
+                line_clean = re.sub(r'<[^>]+>', '', line).strip()  # Remove HTML tags
+                if any(ending in line_clean.upper() for ending in company_endings):
+                    if len(line_clean) > 5 and len(line_clean) < 100:  # Reasonable company name length
+                        companies.append(line_clean)
+        
+        # Clean up and score matches
         matches = []
-        for i, company_name in enumerate(companies[:5]):
+        seen_names = set()
+        
+        for i, company_name in enumerate(companies[:10]):  # Limit to 10 results
             company_name = company_name.strip()
+            company_name = re.sub(r'\s+', ' ', company_name)  # Clean multiple spaces
+            
+            # Skip duplicates and very short names
+            if len(company_name) < 3 or company_name.lower() in seen_names:
+                continue
+            
+            seen_names.add(company_name.lower())
+            
+            # Calculate similarity score
             name_similarity = similarity_score(business_name, company_name)
             
-            if name_similarity > 0.4:
+            # Be more lenient with similarity for better results
+            if name_similarity > 0.3:  # Lowered threshold
                 matches.append({
                     'company_name': company_name,
-                    'company_number': f"Web-{i+1}",
+                    'company_number': f"CH-{i+1}",
                     'address': "Address available on Companies House website",
                     'status': 'active',
                     'similarity_score': name_similarity
                 })
         
+        # Sort by similarity score
         matches.sort(key=lambda x: x['similarity_score'], reverse=True)
-        return matches[:3], None
+        
+        # Debug information
+        debug_info = f"Search term: '{search_name}', Found {len(companies)} raw matches, {len(matches)} filtered matches"
+        
+        if not matches:
+            return [], f"No matching companies found. {debug_info}"
+        
+        return matches[:5], None  # Return top 5 matches
         
     except Exception as e:
         return [], f"Web search error: {str(e)}"
