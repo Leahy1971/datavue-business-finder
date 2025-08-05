@@ -15,7 +15,7 @@ SHEET_URL = "https://docs.google.com/spreadsheets/d/1A0AXN6o3qrPn38XQwnkx_StTAtG
 SHEET_NAME = "CRM"
 
 # Companies House API configuration
-COMPANIES_HOUSE_API_KEY = st.secrets.get("companies_house_api_key", "")  # Add to your secrets
+COMPANIES_HOUSE_API_KEY = st.secrets.get("companies_house_api_key", "")
 COMPANIES_HOUSE_BASE_URL = "https://api.company-information.service.gov.uk"
 
 # Initialize session state
@@ -24,30 +24,17 @@ if 'businesses' not in st.session_state:
 if 'search_performed' not in st.session_state:
     st.session_state.search_performed = False
 
+def similarity_score(a, b):
+    """Calculate similarity between two strings"""
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
 def get_google_sheets_client():
     """Initialize Google Sheets client using Streamlit secrets"""
     try:
         # Check if secrets are available
         if "google_service_account" not in st.secrets:
             st.error("❌ Google service account credentials not found in secrets")
-            st.info("Please add your Google service account JSON to Streamlit secrets")
             return None
-        
-        st.write("✅ Found Google service account credentials")
-        
-        # Check required fields
-        required_fields = ["type", "project_id", "private_key", "client_email"]
-        missing_fields = []
-        
-        for field in required_fields:
-            if field not in st.secrets["google_service_account"]:
-                missing_fields.append(field)
-        
-        if missing_fields:
-            st.error(f"❌ Missing required fields in Google service account: {missing_fields}")
-            return None
-            
-        st.write("✅ All required credential fields present")
         
         # Create credentials
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -64,49 +51,15 @@ def get_google_sheets_client():
             "client_x509_cert_url": st.secrets["google_service_account"]["client_x509_cert_url"]
         }
         
-        try:
-            st.write("🔑 Creating credentials...")
-            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
-            
-            st.write("🔗 Authorizing with Google...")
-            google_client = gspread.authorize(creds)
-            
-            st.write("📊 Opening spreadsheet...")
-            spreadsheet = google_client.open_by_url(SHEET_URL)
-            
-            st.write("📋 Accessing worksheet...")
-            sheet = spreadsheet.worksheet(SHEET_NAME)
-            
-            st.success("✅ Successfully connected to Google Sheets!")
-            return sheet
-            
-        except gspread.WorksheetNotFound:
-            st.error(f"❌ Worksheet '{SHEET_NAME}' not found.")
-            try:
-                worksheets = [ws.title for ws in spreadsheet.worksheets()]
-                st.write(f"Available worksheets: {worksheets}")
-            except:
-                st.error("Could not list available worksheets")
-            return None
-            
-        except Exception as e:
-            st.error(f"❌ Error: {str(e)}")
-            st.error(f"❌ Error type: {type(e).__name__}")
-            
-            # More specific error handling
-            if "private_key" in str(e):
-                st.error("🔑 Issue with private key - check if it's properly formatted")
-            elif "client_email" in str(e):
-                st.error("📧 Issue with client email - check service account email")
-            elif "permission" in str(e).lower():
-                st.error("🔐 Permission issue - make sure service account has access to the sheet")
-            elif "not found" in str(e).lower():
-                st.error("📄 Spreadsheet not found - check the URL")
-                
-            return None
-    
-    except Exception as outer_e:
-        st.error(f"❌ Critical error in Google Sheets setup: {str(outer_e)}")
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+        google_client = gspread.authorize(creds)
+        spreadsheet = google_client.open_by_url(SHEET_URL)
+        sheet = spreadsheet.worksheet(SHEET_NAME)
+        
+        return sheet
+        
+    except Exception as e:
+        st.error(f"❌ Google Sheets connection failed: {str(e)}")
         return None
 
 def apply_filters(businesses, filters):
@@ -117,13 +70,19 @@ def apply_filters(businesses, filters):
         # Rating filter
         if filters.get('min_rating', 0) > 0:
             rating = business.get('Review Score', 0)
-            if rating and float(rating) < filters['min_rating']:
+            try:
+                if rating and float(rating) < filters['min_rating']:
+                    continue
+            except:
                 continue
         
         # Minimum reviews filter
         if filters.get('min_reviews', 0) > 0:
             reviews = business.get('Total Reviews', '0')
-            if reviews and int(reviews.replace(',', '')) < filters['min_reviews']:
+            try:
+                if reviews and int(str(reviews).replace(',', '')) < filters['min_reviews']:
+                    continue
+            except:
                 continue
         
         # Employee count filter
@@ -138,34 +97,30 @@ def apply_filters(businesses, filters):
                         continue
                     elif filters['min_employees'] == "100+" and emp_count < 100:
                         continue
-                except (ValueError, TypeError):
-                    # If employee count is not a valid number, exclude if filter is set
+                except:
                     if filters['min_employees'] != "Any":
                         continue
         
-        # Phone number requirement
+        # Contact requirements
         if filters.get('require_phone', False):
             if not business.get('Phone', '').strip():
                 continue
         
-        # Website requirement
         if filters.get('require_website', False):
             if not business.get('Website', '').strip():
                 continue
         
-        # Email requirement
         if filters.get('require_email', False):
             if not business.get('Email', '').strip():
                 continue
         
-        # Exclude keywords in business name
+        # Keyword filters
         if filters.get('exclude_keywords', ''):
             name_lower = business.get('Business Name', '').lower()
             exclude_list = [kw.strip().lower() for kw in filters['exclude_keywords'].split(',')]
             if any(kw in name_lower for kw in exclude_list if kw):
                 continue
         
-        # Include only keywords in business name
         if filters.get('include_keywords', ''):
             name_lower = business.get('Business Name', '').lower()
             include_list = [kw.strip().lower() for kw in filters['include_keywords'].split(',')]
@@ -180,23 +135,12 @@ def build_search_query(query_term, postcode, filters):
     """Build enhanced search query with additional criteria"""
     base_query = f"{query_term} near {postcode}, UK"
     
-    # Add qualifiers based on filters
     query_modifiers = []
     
     if filters.get('open_now', False):
         query_modifiers.append("open now")
     
-    if filters.get('price_level') and filters['price_level'] != "Any":
-        price_map = {
-            "Budget ($)": "cheap affordable budget",
-            "Moderate ($$)": "moderate pricing",
-            "Expensive ($$$)": "premium high-end",
-            "Very Expensive ($$$$)": "luxury expensive"
-        }
-        if filters['price_level'] in price_map:
-            query_modifiers.append(price_map[filters['price_level']])
-    
-    # Add employee size qualifiers to help find larger companies
+    # Add employee size qualifiers
     if filters.get('min_employees') and filters['min_employees'] != "Any":
         size_map = {
             "10+": "company established business",
@@ -206,14 +150,13 @@ def build_search_query(query_term, postcode, filters):
         if filters['min_employees'] in size_map:
             query_modifiers.append(size_map[filters['min_employees']])
     
-    # Add modifiers to query
     if query_modifiers:
         base_query += " " + " ".join(query_modifiers)
     
     return base_query
 
 def fetch_leads(postcode, query_term, search_filters):
-    """Fetch business leads from Google Maps via SerpAPI with enhanced search"""
+    """Fetch business leads from Google Maps via SerpAPI"""
     
     all_businesses = []
     
@@ -226,10 +169,9 @@ def fetch_leads(postcode, query_term, search_filters):
         seen_place_ids = set()
         
         # Create search queries
-        search_queries = [search_query]  # Always start with the base query
+        search_queries = [search_query]
         
         if max_results_requested > 20:
-            # Add more search variations for higher result counts
             additional_queries = [
                 f"{query_term} services near {postcode}, UK",
                 f"{query_term} company near {postcode}, UK",
@@ -238,23 +180,19 @@ def fetch_leads(postcode, query_term, search_filters):
                 f"{query_term} business near {postcode}, UK",
             ]
             
-            # Add variations until we have enough search queries
             variations_needed = min(5, (max_results_requested + 15) // 16)
             search_queries.extend(additional_queries[:variations_needed])
         
         st.info(f"🔍 Fetching {max_results_requested} results using {len(search_queries)} search queries")
         
-        # Show progress for multiple queries
         if len(search_queries) > 1:
             progress_bar = st.progress(0)
         
-        # Execute each search query
         for query_index, current_query in enumerate(search_queries):
             
             if len(search_queries) > 1:
                 progress_bar.progress(query_index / len(search_queries))
             
-            # API call parameters
             params = {
                 "engine": "google_maps",
                 "q": current_query,
@@ -268,54 +206,41 @@ def fetch_leads(postcode, query_term, search_filters):
             if search_filters.get('open_now', False):
                 params["ludocid"] = None
             
-            # Make the API call
             search = GoogleSearch(params)
             results = search.get_dict()
             
-            # Check for errors
             if "error" in results:
-                error_message = f"API Error on query {query_index + 1}: {results['error']}"
                 if query_index == 0:
-                    st.error(error_message)
+                    st.error(f"API Error: {results['error']}")
                     return []
                 else:
-                    st.warning(error_message + " - Continuing...")
                     continue
             
-            # Get local results
             local_results = results.get("local_results", [])
             if not local_results:
-                if query_index == 0:
-                    st.warning("No businesses found matching your criteria.")
                 continue
             
-            # Process each business result
             for place in local_results:
                 name = place.get("title", "")
                 place_id = place.get("place_id", "")
                 
-                # Skip duplicates
                 if name.lower() in seen_business_names or place_id in seen_place_ids:
                     continue
                 
-                # Track this business
                 if name:
                     seen_business_names.add(name.lower())
                 if place_id:
                     seen_place_ids.add(place_id)
                 
-                # Extract business information
                 reviews = place.get("reviews", "")
                 score = place.get("rating", "")
                 gps = place.get("gps_coordinates", {})
                 address = place.get("address", "")
                 phone = place.get("phone", "")
                 website = place.get("website", "")
-                price_level = place.get("price", "")
                 hours = place.get("hours", "")
                 is_open = place.get("open_state", "")
                 
-                # Build Google Maps URL
                 if place_id:
                     google_maps_url = f"https://www.google.com/maps/place/?q=place_id:{place_id}"
                 elif gps.get("latitude") and gps.get("longitude"):
@@ -325,20 +250,13 @@ def fetch_leads(postcode, query_term, search_filters):
                 else:
                     google_maps_url = place.get("link", "")
                 
-                # Extract employee count
                 employee_count = place.get("employees", "") or place.get("company_size", "")
-                
-                # Extract turnover if available
+                email = place.get("email", "") or place.get("contact_info", {}).get("email", "")
                 turnover = place.get("turnover", "") or place.get("revenue", "") or place.get("annual_sales", "")
                 
-                # Extract email
-                email = place.get("email", "") or place.get("contact_info", {}).get("email", "")
-                
-                # Extract review count
                 total_reviews = ""
                 if reviews:
                     if isinstance(reviews, str):
-                        import re
                         numbers = re.findall(r'\d+', reviews)
                         if numbers:
                             total_reviews = numbers[0]
@@ -348,12 +266,11 @@ def fetch_leads(postcode, query_term, search_filters):
                 if not total_reviews:
                     total_reviews = str(place.get("reviews_count", "") or place.get("user_ratings_total", "") or "0")
                 
-                # Create business record
                 business = {
                     "Business Name": name,
-                    "Official Name": "",  # Will be populated by Companies House
-                    "Company Number": "",  # Companies House number
-                    "Company Type": "",    # Ltd, PLC, etc.
+                    "Official Name": "",
+                    "Company Number": "",
+                    "Company Type": "",
                     "Review Score": score,
                     "Total Reviews": total_reviews,
                     "Location": postcode,
@@ -364,7 +281,7 @@ def fetch_leads(postcode, query_term, search_filters):
                     "Email": email,
                     "Employee Count": employee_count,
                     "Turnover": turnover,
-                    "SIC Codes": "",      # Business activity codes
+                    "SIC Codes": "",
                     "Incorporation Date": "",
                     "Last Accounts Date": "",
                     "Hours": hours,
@@ -376,32 +293,23 @@ def fetch_leads(postcode, query_term, search_filters):
                 
                 all_businesses.append(business)
                 
-                # Stop if we have enough results
                 if len(all_businesses) >= max_results_requested:
                     break
             
-            # Stop outer loop if we have enough results
             if len(all_businesses) >= max_results_requested:
                 break
             
-            # Small delay between API calls
             if query_index < len(search_queries) - 1:
                 time.sleep(0.5)
         
-        # Complete progress bar
         if len(search_queries) > 1:
             progress_bar.progress(1.0)
         
-        # Show results summary
         if all_businesses:
-            st.success(f"✅ Collected {len(all_businesses)} unique businesses from {query_index + 1} search queries")
-        else:
-            st.warning("No businesses found with current criteria.")
+            st.success(f"✅ Collected {len(all_businesses)} unique businesses")
         
-        # Apply filters
         filtered_businesses = apply_filters(all_businesses, search_filters)
         
-        # Sort by quality
         def get_sort_key(business):
             try:
                 rating = float(business.get('Review Score', 0) or 0)
@@ -417,7 +325,6 @@ def fetch_leads(postcode, query_term, search_filters):
         
         filtered_businesses.sort(key=get_sort_key)
         
-        # Limit final results
         if max_results_requested > 0:
             filtered_businesses = filtered_businesses[:max_results_requested]
         
@@ -427,390 +334,8 @@ def fetch_leads(postcode, query_term, search_filters):
         st.error(f"Error in fetch_leads: {str(e)}")
         return all_businesses
 
-def similarity_score(a, b):
-    """Calculate similarity between two strings"""
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
-
-def test_companies_house_api():
-    """Test Companies House API connection with different auth methods"""
-    
-    if not COMPANIES_HOUSE_API_KEY:
-        return "No API key configured"
-    
-    try:
-        url = f"{COMPANIES_HOUSE_BASE_URL}/search/companies"
-        params = {'q': 'tesco', 'items_per_page': 1}
-        
-        # Method 1: Basic Auth with API key as username (standard)
-        import requests.auth
-        response1 = requests.get(
-            url, 
-            auth=requests.auth.HTTPBasicAuth(COMPANIES_HOUSE_API_KEY, ''),
-            params=params
-        )
-        
-        if response1.status_code == 200:
-            return f"✅ Method 1 worked! Status: {response1.status_code}"
-        
-        # Method 2: API key in Authorization header directly
-        headers2 = {'Authorization': COMPANIES_HOUSE_API_KEY}
-        response2 = requests.get(url, headers=headers2, params=params)
-        
-        if response2.status_code == 200:
-            return f"✅ Method 2 worked! Status: {response2.status_code}"
-        
-        # Method 3: Try with Client ID instead of Client Secret
-        # (In case we need the Client ID: 6ec3036e-cfc1-4a59-870f-e5d689a452f1)
-        client_id = "6ec3036e-cfc1-4a59-870f-e5d689a452f1"
-        response3 = requests.get(
-            url,
-            auth=requests.auth.HTTPBasicAuth(client_id, ''),
-            params=params
-        )
-        
-        if response3.status_code == 200:
-            return f"✅ Method 3 (Client ID) worked! Status: {response3.status_code}"
-        
-        # Method 4: Try Client ID with Client Secret as password
-        response4 = requests.get(
-            url,
-            auth=requests.auth.HTTPBasicAuth(client_id, COMPANIES_HOUSE_API_KEY),
-            params=params
-        )
-        
-        if response4.status_code == 200:
-            return f"✅ Method 4 (ID+Secret) worked! Status: {response4.status_code}"
-        
-        # Return all failed attempts
-        return f"""❌ All methods failed:
-Method 1 (Secret as username): {response1.status_code} - {response1.text[:100]}
-Method 2 (Direct header): {response2.status_code} - {response2.text[:100]}  
-Method 3 (Client ID): {response3.status_code} - {response3.text[:100]}
-Method 4 (ID+Secret): {response4.status_code} - {response4.text[:100]}"""
-        
-    except Exception as e:
-        return f"Error: {str(e)}"
-    """Search Companies House for matching companies"""
-    
-    if not COMPANIES_HOUSE_API_KEY:
-        return [], "Companies House API key not configured"
-    
-    try:
-        # Clean business name for search
-        search_name = re.sub(r'\b(ltd|limited|plc|llp|&|and)\b', '', business_name.lower()).strip()
-        search_name = re.sub(r'[^\w\s]', ' ', search_name).strip()
-        
-        # Companies House search API
-        url = f"{COMPANIES_HOUSE_BASE_URL}/search/companies"
-        
-        # Try different authentication methods
-        # Method 1: Basic Auth with API key as username
-        import base64
-        auth_string = f"{COMPANIES_HOUSE_API_KEY}:"
-        auth_bytes = auth_string.encode('ascii')
-        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
-        
-        headers = {
-            'Authorization': f'Basic {auth_b64}',
-            'Accept': 'application/json'
-        }
-        
-        params = {
-            'q': search_name,
-            'items_per_page': 10
-        }
-        
-        response = requests.get(url, headers=headers, params=params)
-        
-        # Debug information
-        debug_info = f"Status: {response.status_code}, URL: {url}"
-        
-        if response.status_code == 401:
-            # Try alternative authentication method
-            headers_alt = {
-                'Authorization': f'Bearer {COMPANIES_HOUSE_API_KEY}',
-                'Accept': 'application/json'
-            }
-            
-            response_alt = requests.get(url, headers=headers_alt, params=params)
-            
-            if response_alt.status_code == 401:
-                # Try with API key in header
-                headers_alt2 = {
-                    'X-API-Key': COMPANIES_HOUSE_API_KEY,
-                    'Accept': 'application/json'
-                }
-                
-                response_alt2 = requests.get(url, headers=headers_alt2, params=params)
-                
-                if response_alt2.status_code == 401:
-                    return [], f"Authentication failed with all methods. Debug: {debug_info}. API Key length: {len(COMPANIES_HOUSE_API_KEY)}. Key starts with: {COMPANIES_HOUSE_API_KEY[:10]}..."
-                else:
-                    response = response_alt2
-            else:
-                response = response_alt
-        
-        elif response.status_code == 429:
-            return [], "Rate limit exceeded - please wait a moment and try again"
-        elif response.status_code != 200:
-            return [], f"Companies House API error: {response.status_code} - {response.text[:200]}"
-        
-        data = response.json()
-        companies = data.get('items', [])
-        
-        if not companies:
-            return [], f"No companies found for search term: {search_name}"
-        
-        # Filter and score matches
-        matches = []
-        for company in companies:
-            company_name = company.get('title', '')
-            company_address = company.get('address_snippet', '')
-            company_number = company.get('company_number', '')
-            company_status = company.get('company_status', '')
-            
-            # Calculate similarity score
-            name_similarity = similarity_score(business_name, company_name)
-            
-            # Boost score if postcode matches
-            postcode_boost = 0
-            if postcode and postcode.upper() in company_address.upper():
-                postcode_boost = 0.2
-            
-            total_score = name_similarity + postcode_boost
-            
-            # Only include active companies with reasonable similarity
-            if company_status == 'active' and total_score > 0.4:
-                matches.append({
-                    'company_name': company_name,
-                    'company_number': company_number,
-                    'address': company_address,
-                    'status': company_status,
-                    'similarity_score': total_score
-                })
-        
-        # Sort by similarity score
-        matches.sort(key=lambda x: x['similarity_score'], reverse=True)
-        
-        return matches[:3], None  # Return top 3 matches
-        
-    except Exception as e:
-        return [], f"Error searching Companies House: {str(e)}"
-
-def get_companies_house_financials(company_number):
-    """Get financial data from Companies House"""
-    
-    if not COMPANIES_HOUSE_API_KEY:
-        return {}, "Companies House API key not configured"
-    
-    try:
-        # Set up Basic Auth
-        import base64
-        auth_string = f"{COMPANIES_HOUSE_API_KEY}:"
-        auth_bytes = auth_string.encode('ascii')
-        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
-        
-        headers = {
-            'Authorization': f'Basic {auth_b64}',
-            'Accept': 'application/json'
-        }
-        
-        # Get company filing history
-        url = f"{COMPANIES_HOUSE_BASE_URL}/company/{company_number}/filing-history"
-        params = {
-            'category': 'accounts',
-            'items_per_page': 5
-        }
-        
-        response = requests.get(url, headers=headers, params=params)
-        
-        if response.status_code == 401:
-            return {}, "Invalid Companies House API key for financials lookup"
-        elif response.status_code != 200:
-            return {}, f"Filing history API error: {response.status_code}"
-        
-        filings_data = response.json()
-        filings = filings_data.get('items', [])
-        
-        # Get company details for additional info
-        company_url = f"{COMPANIES_HOUSE_BASE_URL}/company/{company_number}"
-        company_response = requests.get(company_url, headers=headers)
-        
-        company_details = {}
-        if company_response.status_code == 200:
-            company_details = company_response.json()
-        
-        # Extract financial information
-        financial_data = {
-            'company_number': company_number,
-            'official_name': company_details.get('company_name', ''),
-            'incorporation_date': company_details.get('date_of_creation', ''),
-            'company_type': company_details.get('type', ''),
-            'sic_codes': company_details.get('sic_codes', []),
-            'accounts_due': company_details.get('accounts', {}).get('next_due', ''),
-            'last_accounts': company_details.get('accounts', {}).get('last_accounts', {}).get('period_end_on', ''),
-            'turnover': 'Not available',
-            'profit': 'Not available',
-            'employees': 'Not available'
-        }
-        
-        # Try to extract turnover from recent filings
-        for filing in filings:
-            if 'annual-return' not in filing.get('description', '').lower():
-                filing_date = filing.get('date', '')
-                if filing_date:
-                    # Note: Full accounts data requires additional API calls to specific documents
-                    # This would need document parsing which is complex
-                    financial_data['latest_filing_date'] = filing_date
-                    break
-        
-        return financial_data, None
-        
-    except Exception as e:
-        return {}, f"Error getting financials: {str(e)}"
-
-def search_companies_house(business_name, postcode=None):
-    """Search Companies House for matching companies via API"""
-    
-    import re  # Import at the top of the function
-    import base64
-    
-    if not COMPANIES_HOUSE_API_KEY:
-        return [], "Companies House API key not configured"
-    
-    try:
-        # Clean business name for search
-        search_name = re.sub(r'\b(ltd|limited|plc|llp|&|and)\b', '', business_name.lower()).strip()
-        search_name = re.sub(r'[^\w\s]', ' ', search_name).strip()
-        
-        # Companies House search API
-        url = f"{COMPANIES_HOUSE_BASE_URL}/search/companies"
-        
-        # Try Basic Auth (most common method)
-        auth_string = f"{COMPANIES_HOUSE_API_KEY}:"
-        auth_bytes = auth_string.encode('ascii')
-        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
-        
-        headers = {
-            'Authorization': f'Basic {auth_b64}',
-            'Accept': 'application/json'
-        }
-        
-        params = {
-            'q': search_name,
-            'items_per_page': 10
-        }
-        
-        response = requests.get(url, headers=headers, params=params)
-        
-        if response.status_code == 401:
-            return [], "Invalid Companies House API key - API authentication failed"
-        elif response.status_code == 429:
-            return [], "Rate limit exceeded - please wait a moment and try again"
-        elif response.status_code != 200:
-            return [], f"Companies House API error: {response.status_code}"
-        
-        data = response.json()
-        companies = data.get('items', [])
-        
-        if not companies:
-            return [], f"No companies found for search term: {search_name}"
-        
-        # Filter and score matches
-        matches = []
-        for company in companies:
-            company_name = company.get('title', '')
-            company_address = company.get('address_snippet', '')
-            company_number = company.get('company_number', '')
-            company_status = company.get('company_status', '')
-            
-            # Calculate similarity score
-            name_similarity = similarity_score(business_name, company_name)
-            
-            # Boost score if postcode matches
-            postcode_boost = 0
-            if postcode and postcode.upper() in company_address.upper():
-                postcode_boost = 0.2
-            
-            total_score = name_similarity + postcode_boost
-            
-            # Only include active companies with reasonable similarity
-            if company_status == 'active' and total_score > 0.4:
-                matches.append({
-                    'company_name': company_name,
-                    'company_number': company_number,
-                    'address': company_address,
-                    'status': company_status,
-                    'similarity_score': total_score
-                })
-        
-        # Sort by similarity score
-        matches.sort(key=lambda x: x['similarity_score'], reverse=True)
-        
-        return matches[:3], None  # Return top 3 matches
-        
-    except Exception as e:
-        return [], f"Error searching Companies House API: {str(e)}"
-    """Fallback: Search Companies House via web scraping when API fails"""
-    
-    try:
-        import urllib.parse
-        
-        # Clean business name for search
-        search_name = re.sub(r'\b(ltd|limited|plc|llp|&|and)\b', '', business_name.lower()).strip()
-        search_name = re.sub(r'[^\w\s]', ' ', search_name).strip()
-        
-        # Companies House website search
-        base_url = "https://find-and-update.company-information.service.gov.uk/search/companies"
-        params = {'q': search_name}
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        response = requests.get(base_url, params=params, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            return [], f"Web search failed: Status {response.status_code}"
-        
-        # Simple parsing to extract company information
-        import re
-        html = response.text
-        
-        # Look for company entries in the HTML
-        # This is a basic regex - Companies House might change their HTML
-        company_pattern = r'<h3[^>]*>\s*<a[^>]*href="[^"]*"[^>]*>([^<]+)</a>\s*</h3>'
-        companies = re.findall(company_pattern, html)
-        
-        matches = []
-        for i, company_name in enumerate(companies[:5]):  # Limit to 5 results
-            # Clean up the company name
-            company_name = company_name.strip()
-            
-            # Calculate similarity score
-            name_similarity = similarity_score(business_name, company_name)
-            
-            if name_similarity > 0.4:  # Only include reasonable matches
-                matches.append({
-                    'company_name': company_name,
-                    'company_number': f"Web-{i+1}",  # Placeholder
-                    'address': "Address available on Companies House website",
-                    'status': 'active',
-                    'similarity_score': name_similarity
-                })
-        
-        # Sort by similarity score
-        matches.sort(key=lambda x: x['similarity_score'], reverse=True)
-        
-        return matches[:3], None
-        
-    except Exception as e:
-        return [], f"Web search error: {str(e)}"
-
 def enhance_business_data(business_data, api_key):
-    """Search the web for missing business contact information and turnover data"""
-    
-    import re  # Import re module at the top of the function
+    """Search the web for missing business contact information"""
     
     enhanced_data = business_data.copy()
     search_results = []
@@ -820,44 +345,31 @@ def enhance_business_data(business_data, api_key):
         location = business_data.get('Location', '')
         
         if not business_name:
-            return enhanced_data, ["No business name provided for enhancement"]
+            return enhanced_data, ["No business name provided"]
         
-        # Create search queries to find missing data
         search_queries = []
         
-        # Check what data is missing and create targeted searches
         missing_phone = not business_data.get('Phone', '').strip()
         missing_email = not business_data.get('Email', '').strip()
         missing_website = not business_data.get('Website', '').strip()
         missing_turnover = not business_data.get('Turnover', '').strip()
         
         if missing_phone or missing_email or missing_website or missing_turnover:
-            # Primary search - business name + location + contact
             search_queries.append(f'"{business_name}" {location} contact phone email')
             
-            # Secondary search - business name + turnover/revenue
             if missing_turnover:
-                search_queries.append(f'"{business_name}" {location} turnover revenue annual sales')
-            
-            # Tertiary search - business name + location + website
-            if missing_website:
-                search_queries.append(f'"{business_name}" {location} website')
-            
-            # Quaternary search - business name + phone number
-            if missing_phone:
-                search_queries.append(f'"{business_name}" {location} phone number mobile')
+                search_queries.append(f'"{business_name}" {location} turnover revenue')
         
         if not search_queries:
             return enhanced_data, ["All information already available"]
         
-        # Perform web searches
-        for query in search_queries[:3]:  # Limit to 3 searches to avoid API limits
+        for query in search_queries[:2]:
             try:
                 params = {
                     "engine": "google",
                     "q": query,
                     "api_key": api_key,
-                    "num": 5  # Limit results
+                    "num": 5
                 }
                 
                 search = GoogleSearch(params)
@@ -867,12 +379,7 @@ def enhance_business_data(business_data, api_key):
                     search_results.append(f"Search error: {results['error']}")
                     continue
                 
-                # Extract data from organic results
                 organic_results = results.get("organic_results", [])
-                
-                if not organic_results:
-                    search_results.append(f"No search results found for: {query}")
-                    continue
                 
                 for result in organic_results:
                     snippet = result.get("snippet", "").lower()
@@ -880,19 +387,17 @@ def enhance_business_data(business_data, api_key):
                     link = result.get("link", "")
                     full_text = snippet + " " + title
                     
-                    # Look for phone numbers in snippets
+                    # Look for phone numbers
                     if missing_phone:
-                        # UK phone number patterns
                         phone_patterns = [
-                            r'\b(?:0|\+44)\d{2,4}\s?\d{3,4}\s?\d{3,4}\b',  # UK landline/mobile
-                            r'\b(?:07\d{9}|7\d{9})\b',  # UK mobile
-                            r'\b0\d{3,4}\s?\d{3,4}\s?\d{3,4}\b'  # UK landline
+                            r'\b(?:0|\+44)\d{2,4}\s?\d{3,4}\s?\d{3,4}\b',
+                            r'\b(?:07\d{9}|7\d{9})\b',
+                            r'\b0\d{3,4}\s?\d{3,4}\s?\d{3,4}\b'
                         ]
                         
                         for pattern in phone_patterns:
                             phone_matches = re.findall(pattern, full_text)
                             if phone_matches:
-                                # Clean up the phone number
                                 phone = phone_matches[0].strip()
                                 if phone and len(phone) >= 10:
                                     enhanced_data['Phone'] = phone
@@ -900,86 +405,59 @@ def enhance_business_data(business_data, api_key):
                                     missing_phone = False
                                     break
                     
-                    # Look for email addresses
+                    # Look for emails
                     if missing_email:
                         email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
                         email_matches = re.findall(email_pattern, full_text)
                         if email_matches:
-                            # Filter out generic emails
                             valid_emails = [email for email in email_matches 
                                           if not any(generic in email.lower() 
-                                                   for generic in ['noreply', 'support', 'info@google', 'contact@example'])]
+                                                   for generic in ['noreply', 'support', 'info@google'])]
                             if valid_emails:
                                 enhanced_data['Email'] = valid_emails[0]
                                 search_results.append(f"Found email: {valid_emails[0]}")
                                 missing_email = False
                     
-                    # Look for turnover/revenue information
+                    # Look for websites
+                    if missing_website and link:
+                        exclude_domains = ['google.', 'facebook.', 'linkedin.', 'twitter.']
+                        if not any(domain in link.lower() for domain in exclude_domains):
+                            business_words = business_name.lower().split()
+                            if any(word in link.lower() for word in business_words if len(word) > 3):
+                                enhanced_data['Website'] = link
+                                search_results.append(f"Found website: {link}")
+                                missing_website = False
+                    
+                    # Look for turnover
                     if missing_turnover:
-                        # Patterns for UK business turnover - more specific patterns
                         turnover_patterns = [
                             r'turnover[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
                             r'revenue[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
-                            r'annual sales[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
-                            r'£([\d,]+(?:\.\d+)?)\s*(million|m)\s*turnover',
-                            r'£([\d,]+(?:\.\d+)?)\s*(million|m)\s*revenue',
-                            r'turnover[:\s]+£([\d,]+(?:\.\d+)?)',
-                            r'revenue[:\s]+£([\d,]+(?:\.\d+)?)',
                         ]
                         
                         for pattern in turnover_patterns:
                             turnover_matches = re.findall(pattern, full_text, re.IGNORECASE)
                             if turnover_matches:
                                 for match in turnover_matches:
-                                    if isinstance(match, tuple):
-                                        # Handle patterns with scale (million, k, etc.)
-                                        if len(match) >= 2:
-                                            value, scale = match[0], match[1].lower()
-                                        else:
-                                            value, scale = match[0], ""
-                                    else:
-                                        # Single value match
-                                        value, scale = match, ""
-                                    
-                                    # Clean the value and check it's valid
-                                    value = value.replace(',', '').strip()
-                                    if value and value.replace('.', '').isdigit():
-                                        # Format based on scale
-                                        if 'million' in scale or scale == 'm':
-                                            enhanced_data['Turnover'] = f"£{value}M"
-                                        elif 'thousand' in scale or scale == 'k':
-                                            enhanced_data['Turnover'] = f"£{value}K"
-                                        else:
-                                            # Try to guess scale based on value size
-                                            float_val = float(value)
-                                            if float_val >= 1000000:
-                                                enhanced_data['Turnover'] = f"£{float_val/1000000:.1f}M"
-                                            elif float_val >= 1000:
-                                                enhanced_data['Turnover'] = f"£{float_val/1000:.0f}K"
+                                    if isinstance(match, tuple) and len(match) >= 2:
+                                        value, scale = match[0], match[1].lower()
+                                        value = value.replace(',', '').strip()
+                                        if value and value.replace('.', '').isdigit():
+                                            if 'million' in scale or scale == 'm':
+                                                enhanced_data['Turnover'] = f"£{value}M"
+                                            elif 'thousand' in scale or scale == 'k':
+                                                enhanced_data['Turnover'] = f"£{value}K"
                                             else:
                                                 enhanced_data['Turnover'] = f"£{value}"
-                                        
-                                        search_results.append(f"Found turnover: {enhanced_data['Turnover']}")
-                                        missing_turnover = False
-                                        break
-                                
+                                            
+                                            search_results.append(f"Found turnover: {enhanced_data['Turnover']}")
+                                            missing_turnover = False
+                                            break
                                 if not missing_turnover:
                                     break
-                    
-                    # Look for website
-                    if missing_website and link:
-                        # Check if this link looks like a business website (not Google, Facebook, etc.)
-                        exclude_domains = ['google.', 'facebook.', 'linkedin.', 'twitter.', 'instagram.', 'youtube.']
-                        if not any(domain in link.lower() for domain in exclude_domains):
-                            # Simple check if this might be the business website
-                            business_words = business_name.lower().split()
-                            if any(word in link.lower() for word in business_words if len(word) > 3):
-                                enhanced_data['Website'] = link
-                                search_results.append(f"Found potential website: {link}")
-                                missing_website = False
             
             except Exception as search_error:
-                search_results.append(f"Search error for query '{query}': {str(search_error)}")
+                search_results.append(f"Search error: {str(search_error)}")
                 continue
         
         if not search_results:
@@ -989,7 +467,55 @@ def enhance_business_data(business_data, api_key):
         
     except Exception as e:
         return enhanced_data, [f"Error during enhancement: {str(e)}"]
-    """Enhanced version that tries API first, then web scraping"""
+
+def search_companies_house_web(business_name, postcode=None):
+    """Search Companies House via web scraping"""
+    
+    try:
+        # Clean business name for search
+        search_name = re.sub(r'\b(ltd|limited|plc|llp|&|and)\b', '', business_name.lower()).strip()
+        search_name = re.sub(r'[^\w\s]', ' ', search_name).strip()
+        
+        base_url = "https://find-and-update.company-information.service.gov.uk/search/companies"
+        params = {'q': search_name}
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(base_url, params=params, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            return [], f"Web search failed: Status {response.status_code}"
+        
+        html = response.text
+        
+        # Look for company entries in the HTML
+        company_pattern = r'<h3[^>]*>\s*<a[^>]*href="[^"]*"[^>]*>([^<]+)</a>\s*</h3>'
+        companies = re.findall(company_pattern, html)
+        
+        matches = []
+        for i, company_name in enumerate(companies[:5]):
+            company_name = company_name.strip()
+            name_similarity = similarity_score(business_name, company_name)
+            
+            if name_similarity > 0.4:
+                matches.append({
+                    'company_name': company_name,
+                    'company_number': f"Web-{i+1}",
+                    'address': "Address available on Companies House website",
+                    'status': 'active',
+                    'similarity_score': name_similarity
+                })
+        
+        matches.sort(key=lambda x: x['similarity_score'], reverse=True)
+        return matches[:3], None
+        
+    except Exception as e:
+        return [], f"Web search error: {str(e)}"
+
+def enhance_with_companies_house(business_data):
+    """Search Companies House for company information"""
     
     enhanced_data = business_data.copy()
     
@@ -1000,52 +526,14 @@ def enhance_business_data(business_data, api_key):
         if not business_name:
             return enhanced_data, "No business name provided"
         
-        # Try API first
-        if COMPANIES_HOUSE_API_KEY:
-            matches, error = search_companies_house(business_name, postcode)
-            
-            if error and "401" not in str(error):  # If not auth error, return API error
-                return enhanced_data, f"Companies House API failed: {error}"
-            elif matches:  # API worked
-                best_match = matches[0]
-                company_number = best_match['company_number']
-                
-                # Get financial data
-                financial_data, fin_error = get_companies_house_financials(company_number)
-                
-                if fin_error:
-                    companies_house_info = {
-                        'official_name': best_match['company_name'],
-                        'company_number': company_number,
-                        'match_score': f"{best_match['similarity_score']:.2f}",
-                        'source': 'Companies House API',
-                        'error': fin_error
-                    }
-                else:
-                    companies_house_info = financial_data
-                    companies_house_info['match_score'] = f"{best_match['similarity_score']:.2f}"
-                    companies_house_info['source'] = 'Companies House API'
-                    
-                    # Update enhanced data
-                    enhanced_data['Official Name'] = financial_data.get('official_name', '')
-                    enhanced_data['Company Number'] = company_number
-                    enhanced_data['Company Type'] = financial_data.get('company_type', '')
-                    enhanced_data['Incorporation Date'] = financial_data.get('incorporation_date', '')
-                    enhanced_data['SIC Codes'] = ', '.join(financial_data.get('sic_codes', [])[:3])
-                    enhanced_data['Last Accounts Date'] = financial_data.get('last_accounts', '')
-                
-                return enhanced_data, companies_house_info
-        
-        # Fallback to web scraping
         matches, error = search_companies_house_web(business_name, postcode)
         
         if error:
-            return enhanced_data, f"Both API and web search failed: {error}"
+            return enhanced_data, f"Companies House search failed: {error}"
         
         if not matches:
-            return enhanced_data, "No matching companies found via web search"
+            return enhanced_data, "No matching companies found in Companies House"
         
-        # Use the best web match
         best_match = matches[0]
         
         companies_house_info = {
@@ -1056,190 +544,17 @@ def enhance_business_data(business_data, api_key):
             'note': 'Full company details available at find-and-update.company-information.service.gov.uk'
         }
         
-        # Update enhanced data with what we found
         enhanced_data['Official Name'] = best_match['company_name']
         enhanced_data['Company Number'] = 'See Companies House website'
+        enhanced_data['Company Type'] = 'Available on website'
+        enhanced_data['SIC Codes'] = 'Available on website'
         
         return enhanced_data, companies_house_info
         
     except Exception as e:
         return enhanced_data, f"Error enhancing with Companies House: {str(e)}"
-    """Search the web for missing business contact information and turnover data"""
-    
-    import re  # Import re module at the top of the function
-    
-    enhanced_data = business_data.copy()
-    search_results = []
-    
-    try:
-        business_name = business_data.get('Business Name', '')
-        location = business_data.get('Location', '')
-        
-        if not business_name:
-            return enhanced_data, ["No business name provided for enhancement"]
-        
-        # Create search queries to find missing data
-        search_queries = []
-        
-        # Check what data is missing and create targeted searches
-        missing_phone = not business_data.get('Phone', '').strip()
-        missing_email = not business_data.get('Email', '').strip()
-        missing_website = not business_data.get('Website', '').strip()
-        missing_turnover = not business_data.get('Turnover', '').strip()
-        
-        if missing_phone or missing_email or missing_website or missing_turnover:
-            # Primary search - business name + location + contact
-            search_queries.append(f'"{business_name}" {location} contact phone email')
-            
-            # Secondary search - business name + turnover/revenue
-            if missing_turnover:
-                search_queries.append(f'"{business_name}" {location} turnover revenue annual sales')
-            
-            # Tertiary search - business name + location + website
-            if missing_website:
-                search_queries.append(f'"{business_name}" {location} website')
-            
-            # Quaternary search - business name + phone number
-            if missing_phone:
-                search_queries.append(f'"{business_name}" {location} phone number mobile')
-        
-        if not search_queries:
-            return enhanced_data, ["All information already available"]
-        
-        # Perform web searches
-        for query in search_queries[:3]:  # Limit to 3 searches to avoid API limits
-            params = {
-                "engine": "google",
-                "q": query,
-                "api_key": api_key,
-                "num": 5  # Limit results
-            }
-            
-            search = GoogleSearch(params)
-            results = search.get_dict()
-            
-            if "error" in results:
-                search_results.append(f"Search error: {results['error']}")
-                continue
-            
-            # Extract data from organic results
-            organic_results = results.get("organic_results", [])
-            
-            if not organic_results:
-                search_results.append(f"No search results found for: {query}")
-                continue
-            
-            for result in organic_results:
-                snippet = result.get("snippet", "").lower()
-                title = result.get("title", "").lower()
-                link = result.get("link", "")
-                full_text = snippet + " " + title
-                
-                # Look for phone numbers in snippets
-                if missing_phone:
-                    # UK phone number patterns
-                    phone_patterns = [
-                        r'\b(?:0|\+44)\d{2,4}\s?\d{3,4}\s?\d{3,4}\b',  # UK landline/mobile
-                        r'\b(?:07\d{9}|7\d{9})\b',  # UK mobile
-                        r'\b0\d{3,4}\s?\d{3,4}\s?\d{3,4}\b'  # UK landline
-                    ]
-                    
-                    for pattern in phone_patterns:
-                        phone_matches = re.findall(pattern, full_text)
-                        if phone_matches:
-                            # Clean up the phone number
-                            phone = phone_matches[0].strip()
-                            if phone and len(phone) >= 10:
-                                enhanced_data['Phone'] = phone
-                                search_results.append(f"Found phone: {phone}")
-                                missing_phone = False
-                                break
-                
-                # Look for email addresses
-                if missing_email:
-                    email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
-                    email_matches = re.findall(email_pattern, full_text)
-                    if email_matches:
-                        # Filter out generic emails
-                        valid_emails = [email for email in email_matches 
-                                      if not any(generic in email.lower() 
-                                               for generic in ['noreply', 'support', 'info@google', 'contact@example'])]
-                        if valid_emails:
-                            enhanced_data['Email'] = valid_emails[0]
-                            search_results.append(f"Found email: {valid_emails[0]}")
-                            missing_email = False
-                
-                # Look for turnover/revenue information
-                if missing_turnover:
-                    # Patterns for UK business turnover - more specific patterns
-                    turnover_patterns = [
-                        r'turnover[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
-                        r'revenue[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
-                        r'annual sales[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
-                        r'£([\d,]+(?:\.\d+)?)\s*(million|m)\s*turnover',
-                        r'£([\d,]+(?:\.\d+)?)\s*(million|m)\s*revenue',
-                        r'turnover[:\s]+£([\d,]+(?:\.\d+)?)',
-                        r'revenue[:\s]+£([\d,]+(?:\.\d+)?)',
-                    ]
-                    
-                    for pattern in turnover_patterns:
-                        turnover_matches = re.findall(pattern, full_text, re.IGNORECASE)
-                        if turnover_matches:
-                            for match in turnover_matches:
-                                if isinstance(match, tuple):
-                                    # Handle patterns with scale (million, k, etc.)
-                                    if len(match) >= 2:
-                                        value, scale = match[0], match[1].lower()
-                                    else:
-                                        value, scale = match[0], ""
-                                else:
-                                    # Single value match
-                                    value, scale = match, ""
-                                
-                                # Clean the value and check it's valid
-                                value = value.replace(',', '').strip()
-                                if value and value.replace('.', '').isdigit():
-                                    # Format based on scale
-                                    if 'million' in scale or scale == 'm':
-                                        enhanced_data['Turnover'] = f"£{value}M"
-                                    elif 'thousand' in scale or scale == 'k':
-                                        enhanced_data['Turnover'] = f"£{value}K"
-                                    else:
-                                        # Try to guess scale based on value size
-                                        float_val = float(value)
-                                        if float_val >= 1000000:
-                                            enhanced_data['Turnover'] = f"£{float_val/1000000:.1f}M"
-                                        elif float_val >= 1000:
-                                            enhanced_data['Turnover'] = f"£{float_val/1000:.0f}K"
-                                        else:
-                                            enhanced_data['Turnover'] = f"£{value}"
-                                    
-                                    search_results.append(f"Found turnover: {enhanced_data['Turnover']}")
-                                    missing_turnover = False
-                                    break
-                            
-                            if not missing_turnover:
-                                break
-                
-                # Look for website
-                if missing_website and link:
-                    # Check if this link looks like a business website (not Google, Facebook, etc.)
-                    exclude_domains = ['google.', 'facebook.', 'linkedin.', 'twitter.', 'instagram.', 'youtube.']
-                    if not any(domain in link.lower() for domain in exclude_domains):
-                        # Simple check if this might be the business website
-                        business_words = business_name.lower().split()
-                        if any(word in link.lower() for word in business_words if len(word) > 3):
-                            enhanced_data['Website'] = link
-                            search_results.append(f"Found potential website: {link}")
-                            missing_website = False
-        
-        if not search_results:
-            search_results.append("No additional information found")
-        
-        return enhanced_data, search_results
-        
-    except Exception as e:
-        return enhanced_data, [f"Error during enhancement: {str(e)}"]
+
+def push_to_crm(sheet, business_data):
     """Push business data to CRM sheet"""
     if not sheet:
         st.error("❌ Google Sheets connection not available")
@@ -1247,11 +562,8 @@ def enhance_business_data(business_data, api_key):
     
     try:
         with st.spinner("Checking if business exists in CRM..."):
-            # Check if business already exists
             crm_data = sheet.get_all_records()
-            st.info(f"Found {len(crm_data)} existing records in CRM")
             
-            # Check for duplicates
             business_name = str(business_data.get("Business Name", "")).strip().lower()
             business_link = str(business_data.get("Link", "")).strip()
             
@@ -1266,7 +578,6 @@ def enhance_business_data(business_data, api_key):
                 return False
             
         with st.spinner("Adding business to CRM..."):
-            # Prepare data for insertion - ensure all values are strings
             row_data = [
                 str(business_data.get("Business Name", "")),
                 str(business_data.get("Official Name", "")),
@@ -1292,18 +603,13 @@ def enhance_business_data(business_data, api_key):
                 str(business_data.get("Notes", ""))
             ]
             
-            # Append new row
             sheet.append_row(row_data)
             st.success("✅ Successfully pushed to CRM!")
-            
-            # Add a small delay to ensure the data is written
             time.sleep(1)
-            
             return True
     
     except Exception as e:
         st.error(f"❌ Error pushing to CRM: {str(e)}")
-        st.error("Please check your Google Sheets permissions and connection")
         return False
 
 # ====== STREAMLIT UI ======
@@ -1318,7 +624,6 @@ if sheet:
     st.success("🔗 Google Sheets connected successfully!")
 else:
     st.error("❌ Google Sheets connection failed. CRM features will be disabled.")
-    st.info("💡 Make sure your Google service account credentials are properly configured in Streamlit secrets.")
 
 # Enhanced Input Section
 st.subheader("🎯 Search Parameters")
@@ -1337,8 +642,8 @@ open_now = col4.checkbox("Open Now Only", help="Only show businesses currently o
 max_results = st.selectbox(
     "Number of Results (Top Reviewed)",
     options=[5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-    index=2,  # Default to 20
-    help="Select how many top-reviewed businesses to return (sorted by rating and review count)"
+    index=2,
+    help="Select how many top-reviewed businesses to return"
 )
 
 # Advanced Filters Section
@@ -1346,35 +651,29 @@ with st.expander("🔧 Advanced Filters", expanded=False):
     st.subheader("Quality Filters")
     
     col1, col2 = st.columns(2)
-    min_rating = col1.slider("Minimum Rating", 0.0, 5.0, 0.0, 0.1, 
-                            help="Filter businesses with rating below this threshold")
-    min_reviews = col2.number_input("Minimum Reviews", min_value=0, value=0, 
-                                   help="Filter businesses with fewer reviews than this")
+    min_rating = col1.slider("Minimum Rating", 0.0, 5.0, 0.0, 0.1)
+    min_reviews = col2.number_input("Minimum Reviews", min_value=0, value=0)
     
     st.subheader("Contact Information Requirements")
     col3, col4, col5 = st.columns(3)
-    require_phone = col3.checkbox("Must have Phone", help="Only show businesses with phone numbers")
-    require_website = col4.checkbox("Must have Website", help="Only show businesses with websites")
-    require_email = col5.checkbox("Must have Email", help="Only show businesses with email addresses")
+    require_phone = col3.checkbox("Must have Phone")
+    require_website = col4.checkbox("Must have Website")
+    require_email = col5.checkbox("Must have Email")
     
     st.subheader("Business Name Filters")
     col6, col7 = st.columns(2)
-    include_keywords = col6.text_input("Include Keywords", 
-                                      help="Comma-separated keywords that MUST be in business name")
-    exclude_keywords = col7.text_input("Exclude Keywords", 
-                                      help="Comma-separated keywords to EXCLUDE from business name")
+    include_keywords = col6.text_input("Include Keywords")
+    exclude_keywords = col7.text_input("Exclude Keywords")
     
     st.subheader("Company Size Filter")
     min_employees = st.selectbox("Minimum Employee Count", 
-                                ["Any", "10+", "50+", "100+"],
-                                help="Filter by minimum company size (employee count)")
+                                ["Any", "10+", "50+", "100+"])
     
     st.subheader("Additional Criteria")
     turnover_level = st.selectbox("Minimum Turnover", 
-                                 ["Any", "£100K+", "£500K+", "£1M+", "£5M+", "£10M+"],
-                                 help="Filter by minimum business turnover/revenue")
+                                 ["Any", "£100K+", "£500K+", "£1M+", "£5M+", "£10M+"])
 
-# Compile filters into dictionary
+# Compile filters
 search_filters = {
     'open_now': open_now,
     'max_results': max_results,
@@ -1389,26 +688,24 @@ search_filters = {
     'turnover_level': turnover_level
 }
 
-# Search button with enhanced functionality
+# Search button
 if st.button("🔍 Search with Filters", type="primary"):
     if not query or not postcode:
         st.error("Please enter both business type and postcode")
     else:
-        with st.spinner("Searching for businesses with your filters..."):
+        with st.spinner("Searching for businesses..."):
             businesses = fetch_leads(postcode, query, search_filters)
             st.session_state.businesses = businesses
             st.session_state.search_performed = True
         
         if not businesses:
-            st.warning("No businesses found matching your criteria. Try adjusting your filters.")
+            st.warning("No businesses found matching your criteria.")
         else:
             st.success(f"Found {len(businesses)} businesses matching your criteria!")
 
-# Display results from session state
+# Display results
 if st.session_state.search_performed and st.session_state.businesses:
     df = pd.DataFrame(st.session_state.businesses)
-    # Data is already sorted by the fetch_leads function, so we don't need to sort again
-    # Convert to numeric for display purposes
     df["Review Score"] = pd.to_numeric(df["Review Score"], errors='coerce')
     df["Total Reviews"] = pd.to_numeric(df["Total Reviews"], errors='coerce')
     
@@ -1435,101 +732,40 @@ if st.session_state.search_performed and st.session_state.businesses:
     
     st.subheader("📊 Search Results")
     
-    # Create a display dataframe for the table
-    display_df = df.copy()
-    
-    # Select and reorder columns for display
+    # Display columns
     display_columns = [
         'Business Name', 'Official Name', 'Company Number', 'Review Score', 'Total Reviews', 
         'Employee Count', 'Address', 'Phone', 'Website', 'Email', 'Turnover', 
         'Company Type', 'SIC Codes', 'Open Status', 'Link'
     ]
     
-    # Display the table with proper link configuration
+    # Display the table
     st.dataframe(
-        display_df[display_columns],
+        df[display_columns],
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Business Name": st.column_config.TextColumn(
-                "Business Name",
-                width="medium"
-            ),
-            "Official Name": st.column_config.TextColumn(
-                "Official Name",
-                help="Companies House registered name",
-                width="medium"
-            ),
-            "Company Number": st.column_config.TextColumn(
-                "Co. Number",
-                help="Companies House registration number",
-                width="small"
-            ),
-            "Review Score": st.column_config.NumberColumn(
-                "Rating",
-                help="Google rating out of 5",
-                width="small",
-                format="%.1f"
-            ),
-            "Total Reviews": st.column_config.NumberColumn(
-                "Reviews",
-                help="Number of reviews",
-                width="small"
-            ),
-            "Employee Count": st.column_config.TextColumn(
-                "Employees",
-                help="Estimated employee count",
-                width="small"
-            ),
-            "Address": st.column_config.TextColumn(
-                "Address",
-                width="large"
-            ),
-            "Phone": st.column_config.TextColumn(
-                "Phone",
-                width="medium"
-            ),
-            "Website": st.column_config.LinkColumn(
-                "Website",
-                help="Business website",
-                width="medium"
-            ),
-            "Email": st.column_config.TextColumn(
-                "Email",
-                width="medium"
-            ),
-            "Turnover": st.column_config.TextColumn(
-                "Turnover",
-                help="Business turnover/revenue",
-                width="small"
-            ),
-            "Company Type": st.column_config.TextColumn(
-                "Type",
-                help="Company type (Ltd, PLC, etc.)",
-                width="small"
-            ),
-            "SIC Codes": st.column_config.TextColumn(
-                "SIC Codes",
-                help="Standard Industrial Classification codes",
-                width="medium"
-            ),
-            "Open Status": st.column_config.TextColumn(
-                "Status",
-                width="small"
-            ),
-            "Link": st.column_config.LinkColumn(
-                "Google Maps",
-                help="View on Google Maps",
-                width="medium"
-            )
+            "Business Name": st.column_config.TextColumn("Business Name", width="medium"),
+            "Official Name": st.column_config.TextColumn("Official Name", width="medium"),
+            "Company Number": st.column_config.TextColumn("Co. Number", width="small"),
+            "Review Score": st.column_config.NumberColumn("Rating", width="small", format="%.1f"),
+            "Total Reviews": st.column_config.NumberColumn("Reviews", width="small"),
+            "Employee Count": st.column_config.TextColumn("Employees", width="small"),
+            "Address": st.column_config.TextColumn("Address", width="large"),
+            "Phone": st.column_config.TextColumn("Phone", width="medium"),
+            "Website": st.column_config.LinkColumn("Website", width="medium"),
+            "Email": st.column_config.TextColumn("Email", width="medium"),
+            "Turnover": st.column_config.TextColumn("Turnover", width="small"),
+            "Company Type": st.column_config.TextColumn("Type", width="small"),
+            "SIC Codes": st.column_config.TextColumn("SIC Codes", width="medium"),
+            "Open Status": st.column_config.TextColumn("Status", width="small"),
+            "Link": st.column_config.LinkColumn("Google Maps", width="medium")
         },
         height=600
     )
     
     st.write("---")
     st.subheader("📝 CRM Actions")
-    
-    # Redesigned CRM Actions with better visual layout
     
     # Top row - Push all and download actions
     col1, col2, col3 = st.columns([2, 1, 2])
@@ -1570,7 +806,6 @@ if st.session_state.search_performed and st.session_state.businesses:
     col6, col7 = st.columns([3, 2])
     
     with col6:
-        # Business selector for data enhancement - fix the business_names reference
         business_names_for_enhancement = df['Business Name'].tolist()
         enhancement_business = st.selectbox(
             "Select a business to enhance contact data:",
@@ -1627,12 +862,13 @@ if st.session_state.search_performed and st.session_state.businesses:
                         if st.button("🔄 Refresh Results", key="refresh_after_enhancement"):
                             st.rerun()
     
+    st.write("")  # Add some vertical spacing
+    
     # Companies House Enhancement Section
     st.write("**Companies House Lookup:**")
     col8, col9 = st.columns([3, 2])
     
     with col8:
-        # Business selector for Companies House lookup
         ch_business = st.selectbox(
             "Select a business to lookup in Companies House:",
             options=range(len(business_names_for_enhancement)),
@@ -1672,15 +908,11 @@ if st.session_state.search_performed and st.session_state.businesses:
                     with col_a:
                         st.write(f"**Official Name:** {ch_info.get('official_name', 'N/A')}")
                         st.write(f"**Company Number:** {ch_info.get('company_number', 'N/A')}")
-                        st.write(f"**Company Type:** {ch_info.get('company_type', 'N/A')}")
-                        st.write(f"**Incorporation:** {ch_info.get('incorporation_date', 'N/A')}")
+                        st.write(f"**Source:** {ch_info.get('source', 'N/A')}")
                     
                     with col_b:
-                        st.write(f"**SIC Codes:** {', '.join(ch_info.get('sic_codes', [])[:3])}")
-                        st.write(f"**Last Accounts:** {ch_info.get('last_accounts', 'N/A')}")
-                        st.write(f"**Accounts Due:** {ch_info.get('accounts_due', 'N/A')}")
-                        if ch_info.get('latest_filing_date'):
-                            st.write(f"**Latest Filing:** {ch_info['latest_filing_date']}")
+                        if ch_info.get('note'):
+                            st.write(f"**Note:** {ch_info['note']}")
                 
                 # Update the dataframe with enhanced data
                 if enhanced_data != selected_business_data:
@@ -1696,12 +928,11 @@ if st.session_state.search_performed and st.session_state.businesses:
     
     st.write("")  # Add some vertical spacing
     
-    # Bottom row - Individual business selection
+    # Individual Business Actions
     st.write("**Individual Business Actions:**")
     col4, col5 = st.columns([3, 2])
     
     with col4:
-        # Individual business selector for CRM push
         business_names = df['Business Name'].tolist()
         selected_business = st.selectbox(
             "Select a business to push to CRM:",
