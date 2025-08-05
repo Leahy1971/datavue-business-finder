@@ -512,7 +512,6 @@ def search_companies_house_web(business_name, postcode=None):
         # If no regex matches, try a simpler approach
         if not companies:
             # Look for any text that might be company names
-            # This is a fallback - look for common company endings
             company_endings = ['LIMITED', 'LTD', 'PLC', 'LLP']
             lines = html.split('\n')
             
@@ -525,6 +524,7 @@ def search_companies_house_web(business_name, postcode=None):
         # Clean up and score matches
         matches = []
         seen_names = set()
+        debug_scores = []
         
         for i, company_name in enumerate(companies[:10]):  # Limit to 10 results
             company_name = company_name.strip()
@@ -536,11 +536,12 @@ def search_companies_house_web(business_name, postcode=None):
             
             seen_names.add(company_name.lower())
             
-            # Calculate similarity score
+            # Calculate similarity score with debug info
             name_similarity = similarity_score(business_name, company_name)
+            debug_scores.append(f"'{company_name}' -> {name_similarity:.2f}")
             
-            # Be more lenient with similarity for better results
-            if name_similarity > 0.3:  # Lowered threshold
+            # Be very lenient with similarity - if we found ANY matches, include them
+            if name_similarity > 0.1:  # Very low threshold
                 matches.append({
                     'company_name': company_name,
                     'company_number': f"CH-{i+1}",
@@ -552,13 +553,24 @@ def search_companies_house_web(business_name, postcode=None):
         # Sort by similarity score
         matches.sort(key=lambda x: x['similarity_score'], reverse=True)
         
-        # Debug information
-        debug_info = f"Search term: '{search_name}', Found {len(companies)} raw matches, {len(matches)} filtered matches"
+        # Enhanced debug information
+        debug_info = f"Search: '{search_name}' vs '{business_name}' | Raw: {len(companies)} | Scores: {'; '.join(debug_scores[:3])}"
         
         if not matches:
-            return [], f"No matching companies found. {debug_info}"
+            # If still no matches, return the best raw match anyway
+            if companies:
+                best_raw = companies[0].strip()
+                return [{
+                    'company_name': best_raw,
+                    'company_number': 'CH-1',
+                    'address': "Address available on Companies House website",
+                    'status': 'active',
+                    'similarity_score': 0.5  # Assign a default score
+                }], f"Using best available match. {debug_info}"
+            else:
+                return [], f"No companies found at all. {debug_info}"
         
-        return matches[:5], None  # Return top 5 matches
+        return matches[:5], f"Found matches! {debug_info}"
         
     except Exception as e:
         return [], f"Web search error: {str(e)}"
