@@ -667,6 +667,9 @@ def get_companies_house_financials(company_number):
 def search_companies_house(business_name, postcode=None):
     """Search Companies House for matching companies via API"""
     
+    import re  # Import at the top of the function
+    import base64
+    
     if not COMPANIES_HOUSE_API_KEY:
         return [], "Companies House API key not configured"
     
@@ -679,7 +682,6 @@ def search_companies_house(business_name, postcode=None):
         url = f"{COMPANIES_HOUSE_BASE_URL}/search/companies"
         
         # Try Basic Auth (most common method)
-        import base64
         auth_string = f"{COMPANIES_HOUSE_API_KEY}:"
         auth_bytes = auth_string.encode('ascii')
         auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
