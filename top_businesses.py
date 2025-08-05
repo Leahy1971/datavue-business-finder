@@ -485,21 +485,22 @@ def get_company_details_from_page(company_url, company_name):
         
         details = {}
         
-        # Extract company number
+        # Extract company number with improved validation
         company_number_patterns = [
-            r'Company number[:\s]*([A-Z0-9]{6,8})',
-            r'number[:\s]*([A-Z0-9]{6,8})',
-            r'([A-Z0-9]{8})',  # 8-digit pattern
-            r'([0-9]{6,8})',   # 6-8 digit number
+            r'Company number[:\s]*([A-Z]{2}\d{6}|\d{8})',  # Improved pattern for 8-digit or 2-letter+6-digit
+            r'number[:\s]*([A-Z]{2}\d{6}|\d{8})',
+            r'\b([A-Z]{2}\d{6}|\d{8})\b',  # Word boundary for better matching
         ]
         
         for pattern in company_number_patterns:
             matches = re.findall(pattern, html, re.IGNORECASE)
             if matches:
-                # Take the first reasonable looking company number
+                # Take the first valid company number
                 for match in matches:
-                    if len(match) >= 6 and len(match) <= 8:
-                        details['company_number'] = match.upper()
+                    match = match.upper()
+                    # Validate: must be exactly 8 chars (all digits) or 2 letters + 6 digits
+                    if (len(match) == 8 and match.isdigit()) or (len(match) == 8 and match[:2].isalpha() and match[2:].isdigit()):
+                        details['company_number'] = match
                         break
                 if 'company_number' in details:
                     break
@@ -614,6 +615,7 @@ def search_companies_house_web(business_name, postcode=None):
         # Process matches and get detailed information
         matches = []
         seen = set()
+        debug_scores = []
         
         for i, (company_link, company_name) in enumerate(company_matches[:5]):
             # Clean up the company name
@@ -627,8 +629,10 @@ def search_companies_house_web(business_name, postcode=None):
             
             # Calculate similarity score
             name_similarity = similarity_score(business_name, clean_name)
+            debug_scores.append(f"'{clean_name}' -> {name_similarity:.2f}")
             
-            if name_similarity > 0.1:
+            # Raised similarity threshold for better quality matches
+            if name_similarity > 0.4:  # Increased from 0.1 to 0.4
                 match_info = {
                     'company_name': clean_name,
                     'company_number': 'Not available via web scraping',
@@ -637,12 +641,15 @@ def search_companies_house_web(business_name, postcode=None):
                     'similarity_score': name_similarity,
                     'company_type': '',
                     'incorporation_date': '',
-                    'sic_codes': ''
+                    'sic_codes': '',
+                    'company_link': ''  # Store the link for UI
                 }
                 
                 # If we have a company link, try to get more details
                 if company_link:
                     full_url = f"https://find-and-update.company-information.service.gov.uk{company_link}"
+                    match_info['company_link'] = full_url  # Store full URL
+                    
                     details = get_company_details_from_page(full_url, clean_name)
                     
                     if details and not details.get('error'):
@@ -663,10 +670,10 @@ def search_companies_house_web(business_name, postcode=None):
         # Sort by similarity score
         matches.sort(key=lambda x: x['similarity_score'], reverse=True)
         
-        debug_info = f"Search: '{search_name}' | Found: {len(company_matches)} links, {len(matches)} valid matches"
+        debug_info = f"Search: '{search_name}' | Found: {len(company_matches)} links, {len(matches)} valid matches (>0.4 similarity) | Scores: {'; '.join(debug_scores[:3])}"
         
         if not matches:
-            return [], f"No matching companies found. {debug_info}"
+            return [], f"No high-quality matches found (similarity >0.4). {debug_info}"
         
         return matches[:3], f"Success! {debug_info}"
         
@@ -712,6 +719,7 @@ def enhance_with_companies_house(business_data):
             'incorporation_date': best_match.get('incorporation_date', 'Not available'),
             'sic_codes': best_match.get('sic_codes', 'Not available'),
             'address': best_match.get('address', 'Available on Companies House website'),
+            'company_link': best_match.get('company_link', ''),  # Add the link for UI
             'match_score': f"{best_match['similarity_score']:.2f}",
             'source': 'Companies House Website',
             'note': 'Full company details available at find-and-update.company-information.service.gov.uk'
@@ -1090,11 +1098,22 @@ if st.session_state.search_performed and st.session_state.businesses:
                     with col_a:
                         st.write(f"**Official Name:** {ch_info.get('official_name', 'N/A')}")
                         st.write(f"**Company Number:** {ch_info.get('company_number', 'N/A')}")
+                        st.write(f"**Company Type:** {ch_info.get('company_type', 'N/A')}")
                         st.write(f"**Source:** {ch_info.get('source', 'N/A')}")
                     
                     with col_b:
+                        st.write(f"**Incorporation Date:** {ch_info.get('incorporation_date', 'N/A')}")
+                        st.write(f"**SIC Codes:** {ch_info.get('sic_codes', 'N/A')}")
                         if ch_info.get('note'):
                             st.write(f"**Note:** {ch_info['note']}")
+                    
+                    # Add clickable link to Companies House profile
+                    if ch_info.get('company_link'):
+                        st.markdown(f"[🔗 View Full Profile on Companies House]({ch_info['company_link']})")
+                    
+                    # Show address if available
+                    if ch_info.get('address') and ch_info['address'] != 'Available on Companies House website':
+                        st.write(f"**Address:** {ch_info['address']}")
                 
                 # Update the dataframe with enhanced data
                 if enhanced_data != selected_business_data:
