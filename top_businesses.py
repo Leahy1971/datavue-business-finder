@@ -490,58 +490,52 @@ def search_companies_house_web(business_name, postcode=None):
         
         html = response.text
         
-        # Try multiple patterns to find company entries
+        # More aggressive pattern matching - look for company names in various HTML structures
         patterns = [
-            # Pattern 1: Standard h3 with link
-            r'<h3[^>]*>\s*<a[^>]*href="[^"]*"[^>]*>([^<]+)</a>\s*</h3>',
-            # Pattern 2: Alternative h3 structure
-            r'<h3[^>]*class="[^"]*"[^>]*>\s*<a[^>]*>([^<]+)</a>',
-            # Pattern 3: More flexible pattern
-            r'<a[^>]*href="/company/[^"]*"[^>]*>([^<]+)</a>',
+            # Pattern 1: Look for company titles in various tag structures
+            r'title["\']?>([^<]*(?:LIMITED|LTD|PLC|LLP)[^<]*)</[^>]*>',
+            # Pattern 2: Look in href attributes pointing to company pages
+            r'href=["\'][^"\']*company/[^"\']*["\'][^>]*>([^<]*(?:LIMITED|LTD|PLC|LLP)[^<]*)</a>',
+            # Pattern 3: More general company name pattern
+            r'>([A-Z][A-Z0-9\s&\-\.]{5,80}(?:LIMITED|LTD|PLC|LLP))</',
             # Pattern 4: Even more flexible
-            r'href="/company/[^"]*"[^>]*>([^<]+)</a>',
+            r'([A-Z][A-Z0-9\s&\-\.]{3,60}(?:LIMITED|LTD|PLC|LLP))',
         ]
         
         companies = []
         for pattern in patterns:
-            matches = re.findall(pattern, html, re.IGNORECASE | re.DOTALL)
+            matches = re.findall(pattern, html, re.IGNORECASE)
             companies.extend(matches)
-            if companies:  # If we found matches with this pattern, stop trying
+            if len(companies) >= 3:  # Stop when we have enough matches
                 break
         
-        # If no regex matches, try a simpler approach
-        if not companies:
-            # Look for any text that might be company names
-            company_endings = ['LIMITED', 'LTD', 'PLC', 'LLP']
-            lines = html.split('\n')
-            
-            for line in lines:
-                line_clean = re.sub(r'<[^>]+>', '', line).strip()  # Remove HTML tags
-                if any(ending in line_clean.upper() for ending in company_endings):
-                    if len(line_clean) > 5 and len(line_clean) < 100:  # Reasonable company name length
-                        companies.append(line_clean)
+        # Clean up company names and remove duplicates
+        cleaned_companies = []
+        seen = set()
         
-        # Clean up and score matches
+        for company in companies:
+            # Clean up the company name
+            clean_name = re.sub(r'\s+', ' ', company.strip())
+            clean_name = re.sub(r'^[^A-Za-z]*', '', clean_name)  # Remove leading non-letters
+            
+            # Skip if too short, too long, or already seen
+            if len(clean_name) < 5 or len(clean_name) > 100 or clean_name.lower() in seen:
+                continue
+                
+            seen.add(clean_name.lower())
+            cleaned_companies.append(clean_name)
+        
+        # Score and filter matches
         matches = []
-        seen_names = set()
         debug_scores = []
         
-        for i, company_name in enumerate(companies[:10]):  # Limit to 10 results
-            company_name = company_name.strip()
-            company_name = re.sub(r'\s+', ' ', company_name)  # Clean multiple spaces
-            
-            # Skip duplicates and very short names
-            if len(company_name) < 3 or company_name.lower() in seen_names:
-                continue
-            
-            seen_names.add(company_name.lower())
-            
-            # Calculate similarity score with debug info
+        for i, company_name in enumerate(cleaned_companies[:10]):
+            # Calculate similarity score
             name_similarity = similarity_score(business_name, company_name)
             debug_scores.append(f"'{company_name}' -> {name_similarity:.2f}")
             
-            # Be very lenient with similarity - if we found ANY matches, include them
-            if name_similarity > 0.1:  # Very low threshold
+            # Very lenient threshold - include almost anything
+            if name_similarity > 0.1:
                 matches.append({
                     'company_name': company_name,
                     'company_number': f"CH-{i+1}",
@@ -554,23 +548,22 @@ def search_companies_house_web(business_name, postcode=None):
         matches.sort(key=lambda x: x['similarity_score'], reverse=True)
         
         # Enhanced debug information
-        debug_info = f"Search: '{search_name}' vs '{business_name}' | Raw: {len(companies)} | Scores: {'; '.join(debug_scores[:3])}"
+        debug_info = f"Search: '{search_name}' vs '{business_name}' | Raw: {len(cleaned_companies)} | Scores: {'; '.join(debug_scores[:3])}"
         
-        if not matches:
-            # If still no matches, return the best raw match anyway
-            if companies:
-                best_raw = companies[0].strip()
-                return [{
-                    'company_name': best_raw,
-                    'company_number': 'CH-1',
-                    'address': "Address available on Companies House website",
-                    'status': 'active',
-                    'similarity_score': 0.5  # Assign a default score
-                }], f"Using best available match. {debug_info}"
-            else:
-                return [], f"No companies found at all. {debug_info}"
-        
-        return matches[:5], f"Found matches! {debug_info}"
+        if not matches and cleaned_companies:
+            # Force include the first company found with a default score
+            best_company = cleaned_companies[0]
+            return [{
+                'company_name': best_company,
+                'company_number': 'CH-1',
+                'address': "Address available on Companies House website", 
+                'status': 'active',
+                'similarity_score': 0.5
+            }], f"Using best available match. {debug_info}"
+        elif not cleaned_companies:
+            return [], f"No companies found in HTML. Search term: '{search_name}'"
+        else:
+            return matches[:5], f"Found matches! {debug_info}"
         
     except Exception as e:
         return [], f"Web search error: {str(e)}"
@@ -585,16 +578,26 @@ def enhance_with_companies_house(business_data):
         postcode = business_data.get('Location', '')
         
         if not business_name:
-            return enhanced_data, "No business name provided"
+            return enhanced_data, {
+                'error': 'No business name provided',
+                'source': 'Error'
+            }
         
         matches, error = search_companies_house_web(business_name, postcode)
         
-        if error:
-            return enhanced_data, f"Companies House search failed: {error}"
+        if error and not matches:
+            return enhanced_data, {
+                'error': f"Companies House search failed: {error}",
+                'source': 'Error'
+            }
         
         if not matches:
-            return enhanced_data, "No matching companies found in Companies House"
+            return enhanced_data, {
+                'error': 'No matching companies found in Companies House',
+                'source': 'Error'
+            }
         
+        # Use the best match
         best_match = matches[0]
         
         companies_house_info = {
@@ -605,6 +608,11 @@ def enhance_with_companies_house(business_data):
             'note': 'Full company details available at find-and-update.company-information.service.gov.uk'
         }
         
+        # If there was an error message but we still found matches, include it
+        if error:
+            companies_house_info['debug'] = error
+        
+        # Update enhanced data with what we found
         enhanced_data['Official Name'] = best_match['company_name']
         enhanced_data['Company Number'] = 'See Companies House website'
         enhanced_data['Company Type'] = 'Available on website'
@@ -613,7 +621,10 @@ def enhance_with_companies_house(business_data):
         return enhanced_data, companies_house_info
         
     except Exception as e:
-        return enhanced_data, f"Error enhancing with Companies House: {str(e)}"
+        return enhanced_data, {
+            'error': f"Error enhancing with Companies House: {str(e)}",
+            'source': 'Error'
+        }
 
 def push_to_crm(sheet, business_data):
     """Push business data to CRM sheet"""
