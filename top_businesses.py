@@ -468,8 +468,103 @@ def enhance_business_data(business_data, api_key):
     except Exception as e:
         return enhanced_data, [f"Error during enhancement: {str(e)}"]
 
+def get_company_details_from_page(company_url, company_name):
+    """Extract detailed company information from Companies House company page"""
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        
+        response = requests.get(company_url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            return {}
+        
+        html = response.text
+        
+        details = {}
+        
+        # Extract company number
+        company_number_patterns = [
+            r'Company number[:\s]*([A-Z0-9]{6,8})',
+            r'number[:\s]*([A-Z0-9]{6,8})',
+            r'([A-Z0-9]{8})',  # 8-digit pattern
+            r'([0-9]{6,8})',   # 6-8 digit number
+        ]
+        
+        for pattern in company_number_patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE)
+            if matches:
+                # Take the first reasonable looking company number
+                for match in matches:
+                    if len(match) >= 6 and len(match) <= 8:
+                        details['company_number'] = match.upper()
+                        break
+                if 'company_number' in details:
+                    break
+        
+        # Extract incorporation date
+        date_patterns = [
+            r'Incorporated[:\s]*([0-9]{1,2}[/\s-][0-9]{1,2}[/\s-][0-9]{4})',
+            r'incorporated[:\s]*([0-9]{1,2}[/\s-][0-9]{1,2}[/\s-][0-9]{4})',
+            r'([0-9]{1,2}[/\s-][0-9]{1,2}[/\s-][0-9]{4})',
+        ]
+        
+        for pattern in date_patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE)
+            if matches:
+                details['incorporation_date'] = matches[0]
+                break
+        
+        # Extract company type
+        type_patterns = [
+            r'(Private limited company)',
+            r'(Public limited company)',
+            r'(Limited liability partnership)',
+            r'(PLC|Ltd|LLP)',
+        ]
+        
+        for pattern in type_patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE)
+            if matches:
+                details['company_type'] = matches[0]
+                break
+        
+        # Extract address (first few lines)
+        address_patterns = [
+            r'address[^>]*>([^<]*(?:<br[^>]*>[^<]*){1,3})',
+            r'Address[^>]*>([^<]*(?:\n[^<]*){1,3})',
+        ]
+        
+        for pattern in address_patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE | re.DOTALL)
+            if matches:
+                address = re.sub(r'<[^>]+>', ' ', matches[0])
+                address = re.sub(r'\s+', ' ', address).strip()
+                if len(address) > 10:
+                    details['address'] = address
+                    break
+        
+        # Look for SIC codes
+        sic_patterns = [
+            r'SIC[^>]*>([^<]*[0-9]{4,5}[^<]*)',
+            r'([0-9]{4,5}[^<]*activity)',
+        ]
+        
+        for pattern in sic_patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE)
+            if matches:
+                details['sic_codes'] = matches[0].strip()
+                break
+        
+        return details
+        
+    except Exception as e:
+        return {'error': f"Error extracting details: {str(e)}"}
+
 def search_companies_house_web(business_name, postcode=None):
-    """Search Companies House via web scraping"""
+    """Search Companies House via web scraping with detailed company information"""
     
     try:
         # Clean business name for search
@@ -490,80 +585,90 @@ def search_companies_house_web(business_name, postcode=None):
         
         html = response.text
         
-        # More aggressive pattern matching - look for company names in various HTML structures
-        patterns = [
-            # Pattern 1: Look for company titles in various tag structures
-            r'title["\']?>([^<]*(?:LIMITED|LTD|PLC|LLP)[^<]*)</[^>]*>',
-            # Pattern 2: Look in href attributes pointing to company pages
-            r'href=["\'][^"\']*company/[^"\']*["\'][^>]*>([^<]*(?:LIMITED|LTD|PLC|LLP)[^<]*)</a>',
-            # Pattern 3: More general company name pattern
-            r'>([A-Z][A-Z0-9\s&\-\.]{5,80}(?:LIMITED|LTD|PLC|LLP))</',
-            # Pattern 4: Even more flexible
-            r'([A-Z][A-Z0-9\s&\-\.]{3,60}(?:LIMITED|LTD|PLC|LLP))',
+        # Look for company links and names together
+        company_link_patterns = [
+            r'<a[^>]*href="(/company/[^"]*)"[^>]*>([^<]*(?:LIMITED|LTD|PLC|LLP)[^<]*)</a>',
+            r'href="(/company/[^"]*)"[^>]*>([^<]*(?:LIMITED|LTD|PLC|LLP)[^<]*)</a>',
         ]
         
-        companies = []
-        for pattern in patterns:
+        company_matches = []
+        for pattern in company_link_patterns:
             matches = re.findall(pattern, html, re.IGNORECASE)
-            companies.extend(matches)
-            if len(companies) >= 3:  # Stop when we have enough matches
+            company_matches.extend(matches)
+            if len(company_matches) >= 3:
                 break
         
-        # Clean up company names and remove duplicates
-        cleaned_companies = []
+        # If no links found, fall back to name-only matching
+        if not company_matches:
+            name_patterns = [
+                r'([A-Z][A-Z0-9\s&\-\.]{5,80}(?:LIMITED|LTD|PLC|LLP))',
+            ]
+            
+            for pattern in name_patterns:
+                matches = re.findall(pattern, html, re.IGNORECASE)
+                # Convert to (link, name) tuples with empty links
+                company_matches.extend([('', match) for match in matches])
+                if len(company_matches) >= 3:
+                    break
+        
+        # Process matches and get detailed information
+        matches = []
         seen = set()
         
-        for company in companies:
+        for i, (company_link, company_name) in enumerate(company_matches[:5]):
             # Clean up the company name
-            clean_name = re.sub(r'\s+', ' ', company.strip())
-            clean_name = re.sub(r'^[^A-Za-z]*', '', clean_name)  # Remove leading non-letters
+            clean_name = re.sub(r'\s+', ' ', company_name.strip())
             
-            # Skip if too short, too long, or already seen
-            if len(clean_name) < 5 or len(clean_name) > 100 or clean_name.lower() in seen:
+            # Skip duplicates and invalid names
+            if len(clean_name) < 5 or clean_name.lower() in seen:
                 continue
                 
             seen.add(clean_name.lower())
-            cleaned_companies.append(clean_name)
-        
-        # Score and filter matches
-        matches = []
-        debug_scores = []
-        
-        for i, company_name in enumerate(cleaned_companies[:10]):
-            # Calculate similarity score
-            name_similarity = similarity_score(business_name, company_name)
-            debug_scores.append(f"'{company_name}' -> {name_similarity:.2f}")
             
-            # Very lenient threshold - include almost anything
+            # Calculate similarity score
+            name_similarity = similarity_score(business_name, clean_name)
+            
             if name_similarity > 0.1:
-                matches.append({
-                    'company_name': company_name,
-                    'company_number': f"CH-{i+1}",
-                    'address': "Address available on Companies House website",
+                match_info = {
+                    'company_name': clean_name,
+                    'company_number': 'Not available via web scraping',
+                    'address': "Available on Companies House website",
                     'status': 'active',
-                    'similarity_score': name_similarity
-                })
+                    'similarity_score': name_similarity,
+                    'company_type': '',
+                    'incorporation_date': '',
+                    'sic_codes': ''
+                }
+                
+                # If we have a company link, try to get more details
+                if company_link:
+                    full_url = f"https://find-and-update.company-information.service.gov.uk{company_link}"
+                    details = get_company_details_from_page(full_url, clean_name)
+                    
+                    if details and not details.get('error'):
+                        # Update with extracted details
+                        if 'company_number' in details:
+                            match_info['company_number'] = details['company_number']
+                        if 'company_type' in details:
+                            match_info['company_type'] = details['company_type']
+                        if 'incorporation_date' in details:
+                            match_info['incorporation_date'] = details['incorporation_date']
+                        if 'sic_codes' in details:
+                            match_info['sic_codes'] = details['sic_codes']
+                        if 'address' in details:
+                            match_info['address'] = details['address']
+                
+                matches.append(match_info)
         
         # Sort by similarity score
         matches.sort(key=lambda x: x['similarity_score'], reverse=True)
         
-        # Enhanced debug information
-        debug_info = f"Search: '{search_name}' vs '{business_name}' | Raw: {len(cleaned_companies)} | Scores: {'; '.join(debug_scores[:3])}"
+        debug_info = f"Search: '{search_name}' | Found: {len(company_matches)} links, {len(matches)} valid matches"
         
-        if not matches and cleaned_companies:
-            # Force include the first company found with a default score
-            best_company = cleaned_companies[0]
-            return [{
-                'company_name': best_company,
-                'company_number': 'CH-1',
-                'address': "Address available on Companies House website", 
-                'status': 'active',
-                'similarity_score': 0.5
-            }], f"Using best available match. {debug_info}"
-        elif not cleaned_companies:
-            return [], f"No companies found in HTML. Search term: '{search_name}'"
-        else:
-            return matches[:5], f"Found matches! {debug_info}"
+        if not matches:
+            return [], f"No matching companies found. {debug_info}"
+        
+        return matches[:3], f"Success! {debug_info}"
         
     except Exception as e:
         return [], f"Web search error: {str(e)}"
@@ -602,7 +707,11 @@ def enhance_with_companies_house(business_data):
         
         companies_house_info = {
             'official_name': best_match['company_name'],
-            'company_number': 'Available on Companies House website',
+            'company_number': best_match.get('company_number', 'Not available via web scraping'),
+            'company_type': best_match.get('company_type', 'Not available'),
+            'incorporation_date': best_match.get('incorporation_date', 'Not available'),
+            'sic_codes': best_match.get('sic_codes', 'Not available'),
+            'address': best_match.get('address', 'Available on Companies House website'),
             'match_score': f"{best_match['similarity_score']:.2f}",
             'source': 'Companies House Website',
             'note': 'Full company details available at find-and-update.company-information.service.gov.uk'
@@ -614,9 +723,10 @@ def enhance_with_companies_house(business_data):
         
         # Update enhanced data with what we found
         enhanced_data['Official Name'] = best_match['company_name']
-        enhanced_data['Company Number'] = 'See Companies House website'
-        enhanced_data['Company Type'] = 'Available on website'
-        enhanced_data['SIC Codes'] = 'Available on website'
+        enhanced_data['Company Number'] = best_match.get('company_number', 'See Companies House website')
+        enhanced_data['Company Type'] = best_match.get('company_type', 'Available on website')
+        enhanced_data['SIC Codes'] = best_match.get('sic_codes', 'Available on website')
+        enhanced_data['Incorporation Date'] = best_match.get('incorporation_date', 'Available on website')
         
         return enhanced_data, companies_house_info
         
