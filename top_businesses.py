@@ -1629,13 +1629,6 @@ if st.session_state.search_performed and st.session_state.businesses:
     
     # Companies House Enhancement Section
     st.write("**Companies House Lookup:**")
-    
-    # Add API test button
-    if st.button("🧪 Test Companies House API", help="Test if your API key is working"):
-        with st.spinner("Testing API connection..."):
-            test_result = test_companies_house_api()
-            st.write(f"**API Test Result:** {test_result}")
-    
     col8, col9 = st.columns([3, 2])
     
     with col8:
