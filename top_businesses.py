@@ -26,82 +26,87 @@ if 'search_performed' not in st.session_state:
 
 def get_google_sheets_client():
     """Initialize Google Sheets client using Streamlit secrets"""
-    # Check if secrets are available
-    if "google_service_account" not in st.secrets:
-        st.error("❌ Google service account credentials not found in secrets")
-        st.info("Please add your Google service account JSON to Streamlit secrets")
-        return None
-    
-    st.write("✅ Found Google service account credentials")
-    
-    # Check required fields
-    required_fields = ["type", "project_id", "private_key", "client_email"]
-    missing_fields = []
-    
-    for field in required_fields:
-        if field not in st.secrets["google_service_account"]:
-            missing_fields.append(field)
-    
-    if missing_fields:
-        st.error(f"❌ Missing required fields in Google service account: {missing_fields}")
-        return None
-        
-    st.write("✅ All required credential fields present")
-    
-    # Create credentials
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds_dict = {
-        "type": st.secrets["google_service_account"]["type"],
-        "project_id": st.secrets["google_service_account"]["project_id"],
-        "private_key_id": st.secrets["google_service_account"]["private_key_id"],
-        "private_key": st.secrets["google_service_account"]["private_key"],
-        "client_email": st.secrets["google_service_account"]["client_email"],
-        "client_id": st.secrets["google_service_account"]["client_id"],
-        "auth_uri": st.secrets["google_service_account"]["auth_uri"],
-        "token_uri": st.secrets["google_service_account"]["token_uri"],
-        "auth_provider_x509_cert_url": st.secrets["google_service_account"]["auth_provider_x509_cert_url"],
-        "client_x509_cert_url": st.secrets["google_service_account"]["client_x509_cert_url"]
-    }
-    
     try:
-        st.write("🔑 Creating credentials...")
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+        # Check if secrets are available
+        if "google_service_account" not in st.secrets:
+            st.error("❌ Google service account credentials not found in secrets")
+            st.info("Please add your Google service account JSON to Streamlit secrets")
+            return None
         
-        st.write("🔗 Authorizing with Google...")
-        google_client = gspread.authorize(creds)
+        st.write("✅ Found Google service account credentials")
         
-        st.write("📊 Opening spreadsheet...")
-        spreadsheet = google_client.open_by_url(SHEET_URL)
+        # Check required fields
+        required_fields = ["type", "project_id", "private_key", "client_email"]
+        missing_fields = []
         
-        st.write("📋 Accessing worksheet...")
-        sheet = spreadsheet.worksheet(SHEET_NAME)
+        for field in required_fields:
+            if field not in st.secrets["google_service_account"]:
+                missing_fields.append(field)
         
-        st.success("✅ Successfully connected to Google Sheets!")
-        return sheet
-        
-    except gspread.WorksheetNotFound:
-        st.error(f"❌ Worksheet '{SHEET_NAME}' not found.")
-        try:
-            worksheets = [ws.title for ws in spreadsheet.worksheets()]
-            st.write(f"Available worksheets: {worksheets}")
-        except:
-            st.error("Could not list available worksheets")
-        return None
-        
-    except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
-        st.error(f"❌ Error type: {type(e).__name__}")
-        
-        # More specific error handling
-        if "private_key" in str(e):
-            st.error("🔑 Issue with private key - check if it's properly formatted")
-        elif "client_email" in str(e):
-            st.error("📧 Issue with client email - check service account email")
-        elif "permission" in str(e).lower():
-            st.error("🔐 Permission issue - make sure service account has access to the sheet")
-        elif "not found" in str(e).lower():
-            st.error("📄 Spreadsheet not found - check the URL")
+        if missing_fields:
+            st.error(f"❌ Missing required fields in Google service account: {missing_fields}")
+            return None
             
+        st.write("✅ All required credential fields present")
+        
+        # Create credentials
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds_dict = {
+            "type": st.secrets["google_service_account"]["type"],
+            "project_id": st.secrets["google_service_account"]["project_id"],
+            "private_key_id": st.secrets["google_service_account"]["private_key_id"],
+            "private_key": st.secrets["google_service_account"]["private_key"],
+            "client_email": st.secrets["google_service_account"]["client_email"],
+            "client_id": st.secrets["google_service_account"]["client_id"],
+            "auth_uri": st.secrets["google_service_account"]["auth_uri"],
+            "token_uri": st.secrets["google_service_account"]["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["google_service_account"]["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["google_service_account"]["client_x509_cert_url"]
+        }
+        
+        try:
+            st.write("🔑 Creating credentials...")
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+            
+            st.write("🔗 Authorizing with Google...")
+            google_client = gspread.authorize(creds)
+            
+            st.write("📊 Opening spreadsheet...")
+            spreadsheet = google_client.open_by_url(SHEET_URL)
+            
+            st.write("📋 Accessing worksheet...")
+            sheet = spreadsheet.worksheet(SHEET_NAME)
+            
+            st.success("✅ Successfully connected to Google Sheets!")
+            return sheet
+            
+        except gspread.WorksheetNotFound:
+            st.error(f"❌ Worksheet '{SHEET_NAME}' not found.")
+            try:
+                worksheets = [ws.title for ws in spreadsheet.worksheets()]
+                st.write(f"Available worksheets: {worksheets}")
+            except:
+                st.error("Could not list available worksheets")
+            return None
+            
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
+            st.error(f"❌ Error type: {type(e).__name__}")
+            
+            # More specific error handling
+            if "private_key" in str(e):
+                st.error("🔑 Issue with private key - check if it's properly formatted")
+            elif "client_email" in str(e):
+                st.error("📧 Issue with client email - check service account email")
+            elif "permission" in str(e).lower():
+                st.error("🔐 Permission issue - make sure service account has access to the sheet")
+            elif "not found" in str(e).lower():
+                st.error("📄 Spreadsheet not found - check the URL")
+                
+            return None
+    
+    except Exception as outer_e:
+        st.error(f"❌ Critical error in Google Sheets setup: {str(outer_e)}")
         return None
 
 def apply_filters(businesses, filters):
@@ -802,7 +807,188 @@ def search_companies_house(business_name, postcode=None):
     except Exception as e:
         return [], f"Web search error: {str(e)}"
 
-def enhance_with_companies_house(business_data):
+def enhance_business_data(business_data, api_key):
+    """Search the web for missing business contact information and turnover data"""
+    
+    import re  # Import re module at the top of the function
+    
+    enhanced_data = business_data.copy()
+    search_results = []
+    
+    try:
+        business_name = business_data.get('Business Name', '')
+        location = business_data.get('Location', '')
+        
+        if not business_name:
+            return enhanced_data, ["No business name provided for enhancement"]
+        
+        # Create search queries to find missing data
+        search_queries = []
+        
+        # Check what data is missing and create targeted searches
+        missing_phone = not business_data.get('Phone', '').strip()
+        missing_email = not business_data.get('Email', '').strip()
+        missing_website = not business_data.get('Website', '').strip()
+        missing_turnover = not business_data.get('Turnover', '').strip()
+        
+        if missing_phone or missing_email or missing_website or missing_turnover:
+            # Primary search - business name + location + contact
+            search_queries.append(f'"{business_name}" {location} contact phone email')
+            
+            # Secondary search - business name + turnover/revenue
+            if missing_turnover:
+                search_queries.append(f'"{business_name}" {location} turnover revenue annual sales')
+            
+            # Tertiary search - business name + location + website
+            if missing_website:
+                search_queries.append(f'"{business_name}" {location} website')
+            
+            # Quaternary search - business name + phone number
+            if missing_phone:
+                search_queries.append(f'"{business_name}" {location} phone number mobile')
+        
+        if not search_queries:
+            return enhanced_data, ["All information already available"]
+        
+        # Perform web searches
+        for query in search_queries[:3]:  # Limit to 3 searches to avoid API limits
+            try:
+                params = {
+                    "engine": "google",
+                    "q": query,
+                    "api_key": api_key,
+                    "num": 5  # Limit results
+                }
+                
+                search = GoogleSearch(params)
+                results = search.get_dict()
+                
+                if "error" in results:
+                    search_results.append(f"Search error: {results['error']}")
+                    continue
+                
+                # Extract data from organic results
+                organic_results = results.get("organic_results", [])
+                
+                if not organic_results:
+                    search_results.append(f"No search results found for: {query}")
+                    continue
+                
+                for result in organic_results:
+                    snippet = result.get("snippet", "").lower()
+                    title = result.get("title", "").lower()
+                    link = result.get("link", "")
+                    full_text = snippet + " " + title
+                    
+                    # Look for phone numbers in snippets
+                    if missing_phone:
+                        # UK phone number patterns
+                        phone_patterns = [
+                            r'\b(?:0|\+44)\d{2,4}\s?\d{3,4}\s?\d{3,4}\b',  # UK landline/mobile
+                            r'\b(?:07\d{9}|7\d{9})\b',  # UK mobile
+                            r'\b0\d{3,4}\s?\d{3,4}\s?\d{3,4}\b'  # UK landline
+                        ]
+                        
+                        for pattern in phone_patterns:
+                            phone_matches = re.findall(pattern, full_text)
+                            if phone_matches:
+                                # Clean up the phone number
+                                phone = phone_matches[0].strip()
+                                if phone and len(phone) >= 10:
+                                    enhanced_data['Phone'] = phone
+                                    search_results.append(f"Found phone: {phone}")
+                                    missing_phone = False
+                                    break
+                    
+                    # Look for email addresses
+                    if missing_email:
+                        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+                        email_matches = re.findall(email_pattern, full_text)
+                        if email_matches:
+                            # Filter out generic emails
+                            valid_emails = [email for email in email_matches 
+                                          if not any(generic in email.lower() 
+                                                   for generic in ['noreply', 'support', 'info@google', 'contact@example'])]
+                            if valid_emails:
+                                enhanced_data['Email'] = valid_emails[0]
+                                search_results.append(f"Found email: {valid_emails[0]}")
+                                missing_email = False
+                    
+                    # Look for turnover/revenue information
+                    if missing_turnover:
+                        # Patterns for UK business turnover - more specific patterns
+                        turnover_patterns = [
+                            r'turnover[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
+                            r'revenue[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
+                            r'annual sales[:\s]+£([\d,]+(?:\.\d+)?)\s*(million|m|k|thousand)',
+                            r'£([\d,]+(?:\.\d+)?)\s*(million|m)\s*turnover',
+                            r'£([\d,]+(?:\.\d+)?)\s*(million|m)\s*revenue',
+                            r'turnover[:\s]+£([\d,]+(?:\.\d+)?)',
+                            r'revenue[:\s]+£([\d,]+(?:\.\d+)?)',
+                        ]
+                        
+                        for pattern in turnover_patterns:
+                            turnover_matches = re.findall(pattern, full_text, re.IGNORECASE)
+                            if turnover_matches:
+                                for match in turnover_matches:
+                                    if isinstance(match, tuple):
+                                        # Handle patterns with scale (million, k, etc.)
+                                        if len(match) >= 2:
+                                            value, scale = match[0], match[1].lower()
+                                        else:
+                                            value, scale = match[0], ""
+                                    else:
+                                        # Single value match
+                                        value, scale = match, ""
+                                    
+                                    # Clean the value and check it's valid
+                                    value = value.replace(',', '').strip()
+                                    if value and value.replace('.', '').isdigit():
+                                        # Format based on scale
+                                        if 'million' in scale or scale == 'm':
+                                            enhanced_data['Turnover'] = f"£{value}M"
+                                        elif 'thousand' in scale or scale == 'k':
+                                            enhanced_data['Turnover'] = f"£{value}K"
+                                        else:
+                                            # Try to guess scale based on value size
+                                            float_val = float(value)
+                                            if float_val >= 1000000:
+                                                enhanced_data['Turnover'] = f"£{float_val/1000000:.1f}M"
+                                            elif float_val >= 1000:
+                                                enhanced_data['Turnover'] = f"£{float_val/1000:.0f}K"
+                                            else:
+                                                enhanced_data['Turnover'] = f"£{value}"
+                                        
+                                        search_results.append(f"Found turnover: {enhanced_data['Turnover']}")
+                                        missing_turnover = False
+                                        break
+                                
+                                if not missing_turnover:
+                                    break
+                    
+                    # Look for website
+                    if missing_website and link:
+                        # Check if this link looks like a business website (not Google, Facebook, etc.)
+                        exclude_domains = ['google.', 'facebook.', 'linkedin.', 'twitter.', 'instagram.', 'youtube.']
+                        if not any(domain in link.lower() for domain in exclude_domains):
+                            # Simple check if this might be the business website
+                            business_words = business_name.lower().split()
+                            if any(word in link.lower() for word in business_words if len(word) > 3):
+                                enhanced_data['Website'] = link
+                                search_results.append(f"Found potential website: {link}")
+                                missing_website = False
+            
+            except Exception as search_error:
+                search_results.append(f"Search error for query '{query}': {str(search_error)}")
+                continue
+        
+        if not search_results:
+            search_results.append("No additional information found")
+        
+        return enhanced_data, search_results
+        
+    except Exception as e:
+        return enhanced_data, [f"Error during enhancement: {str(e)}"]
     """Enhanced version that tries API first, then web scraping"""
     
     enhanced_data = business_data.copy()
