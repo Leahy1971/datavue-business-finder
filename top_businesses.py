@@ -29,7 +29,7 @@ def similarity_score(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def get_google_sheets_client():
-    """Initialize Google Sheets client using Streamlit secrets"""
+    """Initialize Google Sheets client with better error handling"""
     try:
         # Check if secrets are available
         if "google_service_account" not in st.secrets:
@@ -56,11 +56,59 @@ def get_google_sheets_client():
         spreadsheet = google_client.open_by_url(SHEET_URL)
         sheet = spreadsheet.worksheet(SHEET_NAME)
         
+        # Verify sheet structure on connection
+        try:
+            all_values = sheet.get_all_values()
+            if all_values:
+                first_row = all_values[0]
+                st.info(f"📋 Sheet connected. Found {len(first_row)} columns in header row.")
+            else:
+                st.warning("⚠️ Sheet appears to be empty. Headers may need to be set up.")
+        except Exception as verify_error:
+            st.warning(f"⚠️ Sheet connected but could not verify structure: {str(verify_error)}")
+        
         return sheet
         
     except Exception as e:
         st.error(f"❌ Google Sheets connection failed: {str(e)}")
         return None
+
+def initialize_sheet_headers(sheet):
+    """Initialize or fix sheet headers"""
+    expected_headers = [
+        "Business Name",
+        "Official Name", 
+        "Company Number",
+        "Company Type",
+        "Review Score",
+        "Total Reviews",
+        "Location",
+        "Address",
+        "Link",
+        "Phone",
+        "Website",
+        "Reviews",
+        "Email",
+        "Employee Count",
+        "Turnover",
+        "SIC Codes",
+        "Incorporation Date",
+        "Last Accounts Date",
+        "Hours",
+        "Open Status",
+        "Scraped On",
+        "Notes"
+    ]
+    
+    try:
+        # Clear and set headers
+        sheet.clear()
+        sheet.update('A1', [expected_headers])
+        st.success("✅ Sheet headers initialized successfully!")
+        return True
+    except Exception as e:
+        st.error(f"❌ Failed to initialize headers: {str(e)}")
+        return False
 
 def apply_filters(businesses, filters):
     """Apply additional filters to the businesses list"""
@@ -745,75 +793,127 @@ def enhance_with_companies_house(business_data):
         }
 
 def push_to_crm(sheet, business_data):
-    """Push business data to CRM sheet"""
+    """Push business data to CRM sheet with proper header handling"""
     if not sheet:
         st.error("❌ Google Sheets connection not available")
         return False
     
     try:
+        # Define expected headers for your CRM sheet
+        expected_headers = [
+            "Business Name",
+            "Official Name", 
+            "Company Number",
+            "Company Type",
+            "Review Score",
+            "Total Reviews",
+            "Location",
+            "Address",
+            "Link",
+            "Phone",
+            "Website",
+            "Reviews",
+            "Email",
+            "Employee Count",
+            "Turnover",
+            "SIC Codes",
+            "Incorporation Date",
+            "Last Accounts Date",
+            "Hours",
+            "Open Status",
+            "Scraped On",
+            "Notes"
+        ]
+        
         with st.spinner("Checking if business exists in CRM..."):
-            # Define expected headers to handle duplicate/malformed headers
-            expected_headers = [
-                "Business Name", "Official Name", "Company Number", "Company Type",
-                "Review Score", "Total Reviews", "Location", "Address", "Link",
-                "Phone", "Website", "Reviews", "Email", "Employee Count",
-                "Turnover", "SIC Codes", "Incorporation Date", "Last Accounts Date",
-                "Hours", "Open Status", "Scraped On", "Notes"
-            ]
-            
             try:
+                # Use expected_headers parameter to handle header issues
                 crm_data = sheet.get_all_records(expected_headers=expected_headers)
             except Exception as header_error:
-                # If expected_headers fails, try to get data without headers and skip duplicate check
-                st.warning(f"⚠️ Header issue detected: {str(header_error)}. Proceeding without duplicate check.")
-                crm_data = []
+                # If there's still a header issue, try to fix the sheet first
+                st.warning(f"Header issue detected: {str(header_error)}")
+                
+                # Try to get all values and check the first row
+                all_values = sheet.get_all_values()
+                if all_values:
+                    first_row = all_values[0]
+                    st.info(f"Current header row: {first_row}")
+                    
+                    # Check if we need to update headers
+                    if len(first_row) != len(expected_headers) or first_row != expected_headers:
+                        if st.button("🔧 Fix Sheet Headers", key="fix_headers"):
+                            # Update the header row
+                            sheet.update('A1', [expected_headers])
+                            st.success("✅ Headers updated! Please try again.")
+                            return False
+                        else:
+                            st.error("Please click 'Fix Sheet Headers' to resolve the header issue first.")
+                            return False
+                
+                # Fallback: try to get records without header validation
+                try:
+                    crm_data = sheet.get_all_records(head=1)
+                except:
+                    st.error("❌ Could not read CRM data. Please check your sheet format.")
+                    return False
             
             business_name = str(business_data.get("Business Name", "")).strip().lower()
             business_link = str(business_data.get("Link", "")).strip()
             
-            exists = any(
-                str(r.get("Business Name", "")).strip().lower() == business_name or 
-                str(r.get("Link", "")).strip() == business_link
-                for r in crm_data
-            )
+            # Check for duplicates more safely
+            exists = False
+            for record in crm_data:
+                existing_name = str(record.get("Business Name", "")).strip().lower()
+                existing_link = str(record.get("Link", "")).strip()
+                
+                if existing_name == business_name or existing_link == business_link:
+                    exists = True
+                    break
             
             if exists:
                 st.warning("⚠️ Business already exists in CRM.")
                 return False
             
         with st.spinner("Adding business to CRM..."):
-            row_data = [
-                str(business_data.get("Business Name", "")),
-                str(business_data.get("Official Name", "")),
-                str(business_data.get("Company Number", "")),
-                str(business_data.get("Company Type", "")),
-                str(business_data.get("Review Score", "")),
-                str(business_data.get("Total Reviews", "")),
-                str(business_data.get("Location", "")),
-                str(business_data.get("Address", "")),
-                str(business_data.get("Link", "")),
-                str(business_data.get("Phone", "")),
-                str(business_data.get("Website", "")),
-                str(business_data.get("Reviews", "")),
-                str(business_data.get("Email", "")),
-                str(business_data.get("Employee Count", "")),
-                str(business_data.get("Turnover", "")),
-                str(business_data.get("SIC Codes", "")),
-                str(business_data.get("Incorporation Date", "")),
-                str(business_data.get("Last Accounts Date", "")),
-                str(business_data.get("Hours", "")),
-                str(business_data.get("Open Status", "")),
-                str(business_data.get("Scraped On", "")),
-                str(business_data.get("Notes", ""))
-            ]
+            # Prepare row data in the exact order of expected headers
+            row_data = []
+            for header in expected_headers:
+                value = business_data.get(header, "")
+                # Clean the value to avoid issues
+                cleaned_value = str(value).strip() if value is not None else ""
+                row_data.append(cleaned_value)
             
-            sheet.append_row(row_data)
+            # Find the next empty row
+            all_values = sheet.get_all_values()
+            next_row = len(all_values) + 1
+            
+            # Use update instead of append_row for better control
+            range_name = f'A{next_row}:{chr(ord("A") + len(row_data) - 1)}{next_row}'
+            sheet.update(range_name, [row_data])
+            
             st.success("✅ Successfully pushed to CRM!")
             time.sleep(1)
             return True
     
     except Exception as e:
         st.error(f"❌ Error pushing to CRM: {str(e)}")
+        
+        # Provide helpful debugging information
+        with st.expander("🔍 Debug Information"):
+            st.write("**Error Details:**")
+            st.code(str(e))
+            
+            try:
+                all_values = sheet.get_all_values()
+                if all_values:
+                    st.write("**Current Sheet Headers:**")
+                    st.write(all_values[0])
+                    
+                    st.write("**Expected Headers:**")
+                    st.write(expected_headers)
+            except:
+                st.write("Could not retrieve sheet information for debugging.")
+        
         return False
 
 # ====== STREAMLIT UI ======
@@ -826,6 +926,12 @@ with st.spinner("Connecting to Google Sheets..."):
 
 if sheet:
     st.success("🔗 Google Sheets connected successfully!")
+    
+    # Add header fix button
+    if st.button("🔧 Initialize/Fix Sheet Headers"):
+        if initialize_sheet_headers(sheet):
+            st.rerun()
+            
 else:
     st.error("❌ Google Sheets connection failed. CRM features will be disabled.")
 
@@ -969,13 +1075,13 @@ if st.session_state.search_performed and st.session_state.businesses:
     )
     
     st.write("---")
-    st.subheader("📝 CRM Actions")
+    st.subheader("🔄 CRM Actions")
     
     # Top row - Push all and download actions
     col1, col2, col3 = st.columns([2, 1, 2])
     
     with col1:
-        if st.button("🔄 Push All to CRM", use_container_width=True, type="primary"):
+        if st.button("📤 Push All to CRM", use_container_width=True, type="primary"):
             if sheet:
                 success_count = 0
                 for _, row in df.iterrows():
