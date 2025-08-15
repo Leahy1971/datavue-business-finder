@@ -752,7 +752,21 @@ def push_to_crm(sheet, business_data):
     
     try:
         with st.spinner("Checking if business exists in CRM..."):
-            crm_data = sheet.get_all_records()
+            # Define expected headers to handle duplicate/malformed headers
+            expected_headers = [
+                "Business Name", "Official Name", "Company Number", "Company Type",
+                "Review Score", "Total Reviews", "Location", "Address", "Link",
+                "Phone", "Website", "Reviews", "Email", "Employee Count",
+                "Turnover", "SIC Codes", "Incorporation Date", "Last Accounts Date",
+                "Hours", "Open Status", "Scraped On", "Notes"
+            ]
+            
+            try:
+                crm_data = sheet.get_all_records(expected_headers=expected_headers)
+            except Exception as header_error:
+                # If expected_headers fails, try to get data without headers and skip duplicate check
+                st.warning(f"⚠️ Header issue detected: {str(header_error)}. Proceeding without duplicate check.")
+                crm_data = []
             
             business_name = str(business_data.get("Business Name", "")).strip().lower()
             business_link = str(business_data.get("Link", "")).strip()
