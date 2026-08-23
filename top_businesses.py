@@ -244,7 +244,6 @@ def fetch_leads(postcode, query_term, search_filters):
             params = {
                 "engine": "google_maps",
                 "q": current_query,
-                "location": location,
                 "hl": "en",
                 "gl": "uk",
                 "type": "search",
