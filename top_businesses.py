@@ -10,7 +10,7 @@ import re
 from difflib import SequenceMatcher
 
 # ====== CONFIGURATION ======
-API_KEY = "6ba2e2001a696a5702e9a3ce0d491454f20226ff2bf0d48bb838e0562e57f847"
+API_KEY = st.secrets["serpapi_key"]
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1A0AXN6o3qrPn38XQwnkx_StTAtGQ9M97FJA-2rW3Omo/edit"
 SHEET_NAME = "CRM"
 
